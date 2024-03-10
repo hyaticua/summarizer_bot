@@ -1,15 +1,19 @@
 import os
 
 import discord
-from summarizer_bot.message import Message
-from summarizer_bot.summarizer import Summarizer
+from message import Message
+from summarizer import Summarizer
 
 
-message_limit = 10
+message_limit = 50
 
 
 discord_api_key = os.environ.get("DISCORD_API_KEY")
 openai_api_key = os.environ.get("OPENAI_API_KEY")
+
+print(f"discord_api_key {discord_api_key}")
+print(f"openai_api_key {openai_api_key}")
+
 
 bot = discord.Bot()
 summarizer = Summarizer(openai_api_key)
@@ -21,11 +25,20 @@ async def on_ready():
 
 
 @bot.slash_command()
-async def summarize(ctx: discord.ApplicationContext):
+async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
+    num_messages = max(num_messages, message_limit)
+
     chan = bot.get_channel(ctx.channel_id)
-    messages = [Message.convert(msg) for msg in 
-                await chan.history(limit=message_limit).flatten()]
-    summary = summarizer.summarize(messages)
+    raw_messages = await chan.history(limit=num_messages).flatten()
+    messages = []
+
+    for msg in raw_messages:
+        # skip bots and empty messages
+        if not msg.content or msg.author.bot:
+            continue
+        messages.append(Message.convert(msg))
+
+    summary = await summarizer.summarize(messages)
     await ctx.respond(summary)
 
 

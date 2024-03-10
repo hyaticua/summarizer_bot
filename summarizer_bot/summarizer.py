@@ -1,11 +1,9 @@
 from openai import AsyncOpenAI
-from summarizer_bot.message import Message
+from message import Message
 
 class Summarizer:
-    def __init__(self, api_key) -> None:
-        self.client = AsyncOpenAI(
-            api_key=api_key,
-        )
+    def __init__(self, key) -> None:
+        self.client = AsyncOpenAI(api_key=key)
         self.model = "gpt-3.5-turbo"
         self.system_prompt = (
             "You are a helpful tool for summarizing segments of chats in the popular chat service "
@@ -16,6 +14,9 @@ class Summarizer:
     async def summarize(self, msgs: list[Message]) -> str:
         concatenated_msgs = "".join(str(msg) for msg in msgs)
 
+        if not concatenated_msgs:
+            return "Sorry, there was nothing to summarize :)"
+
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -24,5 +25,5 @@ class Summarizer:
             ]
         )
 
-        return response
+        return response.choices[0].message.content
 
