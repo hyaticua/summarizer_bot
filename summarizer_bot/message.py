@@ -11,7 +11,7 @@ class Message:
     @staticmethod
     def convert(msg: discord.Message) -> Self:
         return Message(
-            msg.author.display_name,
+            msg.author.nick,
             msg.content,
         )
 
