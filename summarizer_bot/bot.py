@@ -31,6 +31,10 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
     num_messages = min(num_messages, message_limit)
 
     chan = bot.get_channel(ctx.channel_id)
+    if not chan:
+        ctx.respond("Sorry I don't have access to read this channel.")
+        return
+
     raw_messages = await chan.history(limit=num_messages).flatten()
     messages = []
 
