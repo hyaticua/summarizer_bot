@@ -9,9 +9,9 @@ class Message:
     content: str
 
     @staticmethod
-    def convert(msg: discord.Message, author: discord.Member) -> Self:
+    def convert(msg: discord.Message, author: discord.Member | discord.User) -> Self:
         return Message(
-            author.nick,
+            author.display_name,
             msg.content,
         )
 

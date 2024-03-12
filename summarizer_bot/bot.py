@@ -47,9 +47,9 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
             continue
 
         author = msg.author
-        if not isinstance(author, discord.Member):
-            members = await msg.guild.query_members(user_ids=[msg.author.id])
-            author = members[0]
+        # if not isinstance(author, discord.Member):
+        #     members = await msg.guild.query_members(user_ids=[msg.author.id])
+        #     author = members[0]
 
         messages.append(Message.convert(msg, author))
 
