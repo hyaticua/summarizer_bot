@@ -28,7 +28,7 @@ async def on_ready():
 
 @bot.slash_command()
 async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
-    num_messages = max(num_messages, message_limit)
+    num_messages = min(num_messages, message_limit)
 
     chan = bot.get_channel(ctx.channel_id)
     raw_messages = await chan.history(limit=num_messages).flatten()
@@ -40,7 +40,7 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
             continue
         messages.append(Message.convert(msg))
 
-    logger.info(f"summarize request: {num_messages=} {len(raw_messages)=} {len(messages)=}")
+    print(f"summarize request: {num_messages=} {len(raw_messages)=} {len(messages)=}")
 
     summary = await summarizer.summarize(messages)
     await ctx.respond(summary)
