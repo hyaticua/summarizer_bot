@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing_extensions import Self
 import discord
 
+
 @dataclass
 class Message:
     author: str
@@ -13,6 +14,6 @@ class Message:
             msg.author.display_name,
             msg.content,
         )
-    
+
     def __str__(self) -> str:
         return f"{self.author}:\n{self.content}\n"
