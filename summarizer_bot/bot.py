@@ -44,6 +44,7 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
         # skip bots and empty messages
         if not msg.content or msg.author.bot:
             continue
+
         messages.append(Message.convert(msg))
 
     print(f"summarize request: {num_messages=} {len(raw_messages)=} {len(messages)=}")

@@ -12,7 +12,8 @@ class Message:
     def convert(msg: discord.Message) -> Self:
         author = msg.author
         if not isinstance(author, discord.Member):
-            author = msg.guild.get_member(msg.author.id)
+            members = msg.guild.query_members(user_ids=[msg.author.id])
+            author = members[0]
 
         return Message(
             author.nick,
