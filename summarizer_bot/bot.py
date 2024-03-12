@@ -36,6 +36,8 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
         return
 
     raw_messages = await chan.history(limit=num_messages).flatten()
+    raw_messages.reverse()
+
     messages = []
 
     for msg in raw_messages:
