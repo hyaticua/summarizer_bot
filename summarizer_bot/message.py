@@ -9,12 +9,7 @@ class Message:
     content: str
 
     @staticmethod
-    def convert(msg: discord.Message) -> Self:
-        author = msg.author
-        if not isinstance(author, discord.Member):
-            members = msg.guild.query_members(user_ids=[msg.author.id])
-            author = members[0]
-
+    def convert(msg: discord.Message, author: discord.Member) -> Self:
         return Message(
             author.nick,
             msg.content,

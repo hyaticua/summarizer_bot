@@ -40,12 +40,18 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
 
     messages = []
 
+
     for msg in raw_messages:
         # skip bots and empty messages
         if not msg.content or msg.author.bot:
             continue
 
-        messages.append(Message.convert(msg))
+        author = msg.author
+        if not isinstance(author, discord.Member):
+            members = await msg.guild.query_members(user_ids=[msg.author.id])
+            author = members[0]
+
+        messages.append(Message.convert(msg, author))
 
     print(f"summarize request: {num_messages=} {len(raw_messages)=} {len(messages)=}")
 
