@@ -10,8 +10,12 @@ class Message:
 
     @staticmethod
     def convert(msg: discord.Message) -> Self:
+        author = msg.author
+        if not isinstance(author, discord.Member):
+            author = msg.guild.get_member(msg.author.id)
+
         return Message(
-            msg.author.nick,
+            author.nick,
             msg.content,
         )
 
