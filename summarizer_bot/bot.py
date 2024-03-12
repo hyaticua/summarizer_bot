@@ -4,6 +4,8 @@ import discord
 from message import Message
 from summarizer import Summarizer
 
+from loguru import logger
+
 
 message_limit = 50
 
@@ -37,6 +39,8 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
         if not msg.content or msg.author.bot:
             continue
         messages.append(Message.convert(msg))
+
+    logger.info(f"summarize request: {num_messages=} {len(raw_messages)=} {len(messages)=}")
 
     summary = await summarizer.summarize(messages)
     await ctx.respond(summary)
