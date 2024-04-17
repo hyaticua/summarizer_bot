@@ -46,10 +46,12 @@ async def summarize(
     ctx: discord.ApplicationContext,
     minutes_ago: int = 30,
     start_message_link: str = None,
+    end_message_link: str = None,
 ):
     chan = bot.get_channel(ctx.channel_id)
 
     start_msg = None
+    end_msg = None
     start_time = datetime.datetime.now() - datetime.timedelta(minutes=minutes_ago)
 
     if start_message_link:
@@ -57,13 +59,20 @@ async def summarize(
         if not start_msg:
             await ctx.respond("Unable to parse start message")
             return
+    if end_message_link:
+        end_msg = parse_message_from_link(end_message_link)
+        if not end_msg:
+            await ctx.respond("Unable to parse end message")
+            return
 
     if not chan:
         await ctx.respond("Sorry I don't have access to read this channel.")
         return
 
     raw_messages = await chan.history(
-        limit=MESSAGE_LIMIT, after=start_msg or start_time
+        limit=MESSAGE_LIMIT,
+        before=end_msg,
+        after=start_msg or start_time,
     ).flatten()
     raw_messages.reverse()
 
