@@ -78,6 +78,11 @@ async def summarize(
 
     # raw_messages.reverse()
 
+    if start_msg:
+        raw_messages.insert(0, start_msg)
+    if end_msg:
+        raw_messages.append(end_msg)
+
     messages = []
 
     for msg in raw_messages:
@@ -93,11 +98,6 @@ async def summarize(
                 author = member
 
         messages.append(Message.convert(msg, author))
-
-    if start_msg:
-        messages.insert(0, start_msg)
-    if end_msg:
-        messages.append(end_msg)
 
     print(f"summarize request: {len(raw_messages)=} {len(messages)=}")
     print(f"{messages}")
