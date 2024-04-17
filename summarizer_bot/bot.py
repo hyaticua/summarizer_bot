@@ -27,7 +27,7 @@ async def on_ready():
     print(f"We have logged in as {bot.user}")
 
 
-def parse_message_from_link(message_link: str):
+def parse_message_from_link(message_link: str) -> discord.Message | None:
     if not message_link.startswith(DISCORD_MESSAGE_LINK_PREFIX):
         return None
 
@@ -38,7 +38,7 @@ def parse_message_from_link(message_link: str):
 
     guild = bot.get_guild(server_id)
     channel = guild.get_channel_or_thread(channel_id)
-    return channel.get_partial_message(msg_id)
+    return channel.fetch_message(msg_id)
 
 
 @bot.slash_command()
@@ -73,8 +73,10 @@ async def summarize(
         limit=MESSAGE_LIMIT,
         before=end_msg,
         after=start_msg or start_time,
+        oldest_first=True,
     ).flatten()
-    raw_messages.reverse()
+
+    # raw_messages.reverse()
 
     messages = []
 
@@ -91,6 +93,11 @@ async def summarize(
                 author = member
 
         messages.append(Message.convert(msg, author))
+
+    if start_msg:
+        messages.insert(0, start_msg)
+    if end_msg:
+        messages.append(end_msg)
 
     print(f"summarize request: {len(raw_messages)=} {len(messages)=}")
 
