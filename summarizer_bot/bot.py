@@ -76,8 +76,7 @@ async def summarize(
         oldest_first=True,
     ).flatten()
 
-    # raw_messages.reverse()
-
+    # call to history is not inclusive
     if start_msg:
         raw_messages.insert(0, start_msg)
     if end_msg:
