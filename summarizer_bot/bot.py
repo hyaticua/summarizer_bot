@@ -27,7 +27,7 @@ async def on_ready():
     print(f"We have logged in as {bot.user}")
 
 
-def parse_message_from_link(message_link: str) -> discord.Message | None:
+async def parse_message_from_link(message_link: str) -> discord.Message | None:
     if not message_link.startswith(DISCORD_MESSAGE_LINK_PREFIX):
         return None
 
@@ -38,7 +38,7 @@ def parse_message_from_link(message_link: str) -> discord.Message | None:
 
     guild = bot.get_guild(server_id)
     channel = guild.get_channel_or_thread(channel_id)
-    return channel.fetch_message(msg_id)
+    return await channel.fetch_message(msg_id)
 
 
 @bot.slash_command()
@@ -55,12 +55,12 @@ async def summarize(
     start_time = datetime.datetime.now() - datetime.timedelta(minutes=minutes_ago)
 
     if start_message_link:
-        start_msg = parse_message_from_link(start_message_link)
+        start_msg = await parse_message_from_link(start_message_link)
         if not start_msg:
             await ctx.respond("Unable to parse start message")
             return
     if end_message_link:
-        end_msg = parse_message_from_link(end_message_link)
+        end_msg = await parse_message_from_link(end_message_link)
         if not end_msg:
             await ctx.respond("Unable to parse end message")
             return
@@ -100,6 +100,7 @@ async def summarize(
         messages.append(end_msg)
 
     print(f"summarize request: {len(raw_messages)=} {len(messages)=}")
+    print(f"{messages}")
 
     summary = await summarizer.summarize(messages)
     await ctx.respond(summary)
