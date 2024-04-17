@@ -83,7 +83,7 @@ async def summarize(
 
         messages.append(Message.convert(msg, author))
 
-    print(f"summarize request: {len(messages)=} {len(raw_messages)=} {len(messages)=}")
+    print(f"summarize request: {len(raw_messages)=} {len(messages)=}")
 
     summary = await summarizer.summarize(messages)
     await ctx.respond(summary)
