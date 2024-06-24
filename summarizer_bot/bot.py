@@ -5,9 +5,14 @@ from message import Message
 from summarizer import Summarizer
 
 from loguru import logger
+import json
 
 
-message_limit = 50
+import aiofiles
+
+
+message_limit = 100
+root_user = ".namielle"
 
 
 discord_api_key = os.environ.get("DISCORD_API_KEY")
@@ -18,16 +23,49 @@ print(f"openai_api_key {openai_api_key}")
 
 
 bot = discord.Bot()
-summarizer = Summarizer(openai_api_key)
 
+try:
+    with open("config.json", "rb") as f:
+        global_config = json.loads(f.read())
+except:
+    global_config = {}
 
 @bot.event
 async def on_ready():
     print(f"We have logged in as {bot.user}")
 
 
+def get_config(id: int) -> dict:
+    return global_config.get(str(id), {})
+
+async def set_config(id: int, configuration: dict):
+    global_config[str(id)] = configuration
+    async with aiofiles.open("config.json", mode="wb") as f:
+        await f.write(json.dumps(global_config, indent=2))
+
+
 @bot.slash_command()
-async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
+async def config(ctx: discord.ApplicationContext, profile: str = None, model: str = None):
+    if ctx.author.name != root_user:
+        await ctx.send_response(
+            content="Sorry, you don't have permission to use this command!", 
+            ephemeral=True)
+        return
+    
+    config = get_config(ctx.guild_id)
+
+    if profile:
+        config["profile"] = profile
+    if model:
+        config["model"] = model
+
+    await set_config(ctx.guild_id, config)
+
+    await ctx.respond("Server config updated <3 <3")
+
+
+@bot.slash_command()
+async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20):
     num_messages = min(num_messages, message_limit)
 
     chan = bot.get_channel(ctx.channel_id)
@@ -39,7 +77,6 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
     raw_messages.reverse()
 
     messages = []
-
 
     for msg in raw_messages:
         # skip bots and empty messages
@@ -55,6 +92,15 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 10):
 
     print(f"summarize request: {num_messages=} {len(raw_messages)=} {len(messages)=}")
 
+    config = get_config(ctx.guild_id)
+
+    print(config)
+
+    summarizer = Summarizer(
+        key=openai_api_key, 
+        model_override=config["model"], 
+        profile=config["profile"])
+    
     summary = await summarizer.summarize(messages)
     await ctx.respond(summary)
 
