@@ -101,7 +101,8 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, acc
     print(profile)
 
     if accent:
-        profile += f" Prioritize writing your summaries in an over the top way with an accent from or in the manner of {accent}. "
+        profile += (f" Prioritize writing your summaries in an over the top way with an accent from or in the manner of {accent}. "
+                     "If the accent is something non-human like a dog, then instead summarize role-playing as that thing. ")
 
     summarizer = Summarizer(
         key=openai_api_key, 
