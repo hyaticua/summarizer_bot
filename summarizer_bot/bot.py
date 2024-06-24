@@ -65,7 +65,7 @@ async def config(ctx: discord.ApplicationContext, profile: str = None, model: st
 
 
 @bot.slash_command()
-async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20):
+async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, accent: str = None):
     num_messages = min(num_messages, message_limit)
 
     chan = bot.get_channel(ctx.channel_id)
@@ -98,10 +98,16 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20):
 
     print(config)
 
+    profile = config.get("profile", "")
+
+    if accent:
+        profile += f" Write your summaries in an over the top {accent} accent. "
+
     summarizer = Summarizer(
         key=openai_api_key, 
         model_override=config.get("model", None),
-        profile=config.get("profile", None),
+        profile=profile,
+        # profile=config.get("profile", None),
     )
     
     summary = await summarizer.summarize(messages)
