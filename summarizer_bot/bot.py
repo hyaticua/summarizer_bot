@@ -73,6 +73,8 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20):
         await ctx.respond("Sorry I don't have access to read this channel.")
         return
 
+    await ctx.defer()
+
     raw_messages = await chan.history(limit=num_messages).flatten()
     raw_messages.reverse()
 
@@ -98,11 +100,12 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20):
 
     summarizer = Summarizer(
         key=openai_api_key, 
-        model_override=config["model"], 
-        profile=config["profile"])
+        model_override=config.get("model", None),
+        profile=config.get("profile", None),
+    )
     
     summary = await summarizer.summarize(messages)
-    await ctx.respond(summary)
+    await ctx.followup.send(summary)
 
 
 bot.run(discord_api_key)
