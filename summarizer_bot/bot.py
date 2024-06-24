@@ -95,10 +95,10 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, acc
     print(f"summarize request: {num_messages=} {len(raw_messages)=} {len(messages)=}")
 
     config = get_config(ctx.guild_id)
-
-    print(config)
-
+    
     profile = config.get("profile", "")
+
+    print(profile)
 
     if accent:
         profile += f" Write your summaries in an over the top {accent} accent. "
