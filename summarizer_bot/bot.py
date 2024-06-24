@@ -95,13 +95,13 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, acc
     print(f"summarize request: {num_messages=} {len(raw_messages)=} {len(messages)=}")
 
     config = get_config(ctx.guild_id)
-    
+
     profile = config.get("profile", "")
 
     print(profile)
 
     if accent:
-        profile += f" Write your summaries in an over the top {accent} accent. "
+        profile += f" Prioritize writing your summaries in an over the top way with an accent from or in the manner of {accent}. "
 
     summarizer = Summarizer(
         key=openai_api_key, 
