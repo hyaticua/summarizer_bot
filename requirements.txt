@@ -1,3 +1,4 @@
-openai
-py-cord
 loguru
+openai
+pandas
+py-cord

@@ -7,8 +7,9 @@ from summarizer import Summarizer
 from loguru import logger
 import json
 
-
 import aiofiles
+
+import pandas as pd
 
 
 message_limit = 100
@@ -24,15 +25,57 @@ print(f"openai_api_key {openai_api_key}")
 
 bot = discord.Bot()
 
+
+server_id = 830082778795999312
+message_data = []
+
 try:
     with open("config.json", "r") as f:
         global_config = json.loads(f.read())
 except:
     global_config = {}
 
+
+def record_metadata(message: discord.Message, location: str, location_type: str):
+    message_data.append({
+        'author_id': str(message.author.id),
+        'author_name': str(message.author.name),
+        'bot': message.author.bot,
+        'datetime': message.created_at,
+        'length': len(message.content),
+        'location': location,
+        'location_type': location_type,
+    })
+
 @bot.event
 async def on_ready():
     print(f"We have logged in as {bot.user}")
+
+    target_server = None
+    
+    for guild in bot.guilds:
+        if guild.id == server_id:
+            target_server = guild
+            break
+
+    for channel in target_server.text_channels:
+        print(f'Fetching messages for channel: {channel.name}')
+
+        async for message in channel.history(limit=None):
+            record_metadata(message, channel.name, "channel")
+            
+
+    for thread in target_server.threads:
+        print(f'Fetching messages for thread: {thread.name}')
+
+        async for message in thread.history(limit=None):
+            record_metadata(message, thread.name, "thread")
+    
+    df = pd.DataFrame(message_data)
+    df.to_csv('message_stats.csv', index=False)
+
+    print('Message data collected and saved!')
+    
 
 
 def get_config(id: int) -> dict:
