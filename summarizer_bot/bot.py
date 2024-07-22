@@ -36,17 +36,28 @@ except:
     global_config = {}
 
 
-def record_metadata(message: discord.Message, location: str, location_type: str):
-    message_data.append({
-        'author_id': str(message.author.id),
-        'author_name': str(message.author.name),
-        'bot': message.author.bot,
-        'datetime': message.created_at,
-        'length': len(message.content),
-        'num_reactions': len(message.reactions),
-        'location': location,
-        'location_type': location_type,
-    })
+async def record_metadata(channel: discord.TextChannel | discord.Thread, target_server: discord.Guild):
+    permissions = channel.permissions_for(target_server.me)
+    location_type = "channel" if isinstance(channel, discord.TextChannel) else "thread"
+
+    if permissions.read_message_history:
+        print(f'Fetching messages for {location_type}: {channel.name}')
+
+        async for message in channel.history(limit=None):
+            message_data.append({
+                'author_id': str(message.author.id),
+                'author_name': str(message.author.name),
+                'bot': message.author.bot,
+                'datetime': message.created_at,
+                'length': len(message.content),
+                'num_reactions': len(message.reactions),
+                'location': channel.name,
+                'location_type': location_type,
+            })
+    else:
+        print(f'Unable to fetch messages for {location_type}: {channel.name}')
+        
+    
 
 @bot.event
 async def on_ready():
@@ -60,10 +71,8 @@ async def on_ready():
             break
 
     for channel in target_server.text_channels:
-        print(f'Fetching messages for channel: {channel.name}')
-
-        async for message in channel.history(limit=None):
-            record_metadata(message, channel.name, "channel")
+        record_metadata(channel, target_server, channel.name, )
+        
             
 
     for thread in target_server.threads:
