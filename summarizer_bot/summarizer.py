@@ -3,7 +3,9 @@ from message import Message
 
 
 class Summarizer:
-    def __init__(self, key: str, model_override: str = None, profile: str = None) -> None:
+    def __init__(
+        self, key: str, model_override: str = None, profile: str = None
+    ) -> None:
         self.client = AsyncOpenAI(api_key=key)
         self.model = model_override or "gpt-4o"
         self.base_system_prompt = (
@@ -14,13 +16,14 @@ class Summarizer:
         )
         self.profile = profile
 
-
     def get_sys_prompt(self) -> str:
         if self.profile:
-            return (f"{self.base_system_prompt} "
-                    "Here are some additional instructions, please follow them as closely as possible: "
-                    f"{self.profile} ")
-        return self.base_system_prompt 
+            return (
+                f"{self.base_system_prompt} "
+                "Here are some additional instructions, please follow them as closely as possible: "
+                f"{self.profile} "
+            )
+        return self.base_system_prompt
 
     async def summarize(self, msgs: list[Message]) -> str:
         concatenated_msgs = "".join(str(msg) for msg in msgs)
