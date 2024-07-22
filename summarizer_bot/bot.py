@@ -9,6 +9,7 @@ import json
 import aiofiles
 
 import pandas as pd
+import csv
 
 
 message_limit = 100
@@ -36,7 +37,7 @@ except:
 
 
 async def record_metadata(
-    channel: discord.TextChannel | discord.Thread, target_server: discord.Guild
+    channel: discord.TextChannel | discord.Thread, target_server: discord.Guild, writer: csv.DictWriter,
 ):
     permissions = channel.permissions_for(target_server.me)
     location_type = "channel" if isinstance(channel, discord.TextChannel) else "thread"
@@ -45,7 +46,7 @@ async def record_metadata(
         print(f"Fetching messages for {location_type}: {channel.name}")
 
         async for message in channel.history(limit=None):
-            message_data.append(
+            writer.writerow(
                 {
                     "author_id": str(message.author.id),
                     "author_name": str(message.author.name),
@@ -72,16 +73,18 @@ async def on_ready():
             target_server = guild
             break
 
-    for channel in target_server.text_channels:
-        await record_metadata(channel, target_server)
+    with open("message_stats.csv", "w", newline="") as csvfile:
+        fieldnames = ["author_id", "author_name", "bot", "datetime", "length", "num_reactions", "location", "location_type"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        for channel in target_server.text_channels:
+            await record_metadata(channel, target_server, writer)
 
-    for thread in target_server.threads:
-        await record_metadata(thread, target_server)
+        for thread in target_server.threads:
+            await record_metadata(thread, target_server, writer)
 
-    df = pd.DataFrame(message_data)
-    df.to_csv("message_stats.csv", index=False)
-
-    print("Message data collected and saved!")
+        print("Message data collected and saved!")
 
 
 def get_config(id: int) -> dict:
