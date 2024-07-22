@@ -43,6 +43,7 @@ def record_metadata(message: discord.Message, location: str, location_type: str)
         'bot': message.author.bot,
         'datetime': message.created_at,
         'length': len(message.content),
+        'num_reactions': len(message.reactions),
         'location': location,
         'location_type': location_type,
     })
