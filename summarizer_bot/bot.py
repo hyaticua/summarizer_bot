@@ -73,10 +73,10 @@ async def on_ready():
             break
 
     for channel in target_server.text_channels:
-        record_metadata(channel, target_server)
+        await record_metadata(channel, target_server)
 
     for thread in target_server.threads:
-        record_metadata(thread, target_server)
+        await record_metadata(thread, target_server)
 
     df = pd.DataFrame(message_data)
     df.to_csv("message_stats.csv", index=False)
