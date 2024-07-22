@@ -25,7 +25,7 @@ print(f"openai_api_key {openai_api_key}")
 bot = discord.Bot()
 
 try:
-    with open("config.json", "rb") as f:
+    with open("config.json", "r") as f:
         global_config = json.loads(f.read())
 except:
     global_config = {}
@@ -40,7 +40,7 @@ def get_config(id: int) -> dict:
 
 async def set_config(id: int, configuration: dict):
     global_config[str(id)] = configuration
-    async with aiofiles.open("config.json", mode="wb") as f:
+    async with aiofiles.open("config.json", mode="w") as f:
         await f.write(json.dumps(global_config, indent=2))
 
 
@@ -52,6 +52,8 @@ async def config(ctx: discord.ApplicationContext, profile: str = None, model: st
             ephemeral=True)
         return
     
+    await ctx.defer()
+    
     config = get_config(ctx.guild_id)
 
     if profile:
@@ -61,7 +63,7 @@ async def config(ctx: discord.ApplicationContext, profile: str = None, model: st
 
     await set_config(ctx.guild_id, config)
 
-    await ctx.respond("Server config updated <3 <3")
+    await ctx.followup.send("Server config updated <3 <3")
 
 
 @bot.slash_command()
