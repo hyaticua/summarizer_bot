@@ -6,9 +6,9 @@ from summarizer import Summarizer
 
 from loguru import logger
 import json
+from config import Config
 
 
-import aiofiles
 
 
 message_limit = 100
@@ -24,24 +24,12 @@ print(f"openai_api_key {openai_api_key}")
 
 bot = discord.Bot()
 
-try:
-    with open("config.json", "r") as f:
-        global_config = json.loads(f.read())
-except:
-    global_config = {}
+config = Config("config.json")
 
 @bot.event
 async def on_ready():
     print(f"We have logged in as {bot.user}")
 
-
-def get_config(id: int) -> dict:
-    return global_config.get(str(id), {})
-
-async def set_config(id: int, configuration: dict):
-    global_config[str(id)] = configuration
-    async with aiofiles.open("config.json", mode="w") as f:
-        await f.write(json.dumps(global_config, indent=2))
 
 
 @bot.slash_command()
@@ -54,14 +42,14 @@ async def config(ctx: discord.ApplicationContext, profile: str = None, model: st
     
     await ctx.defer()
     
-    config = get_config(ctx.guild_id)
+    server_config = config.get_server_config(ctx.guild_id)
 
     if profile:
-        config["profile"] = profile
+        server_config["profile"] = profile
     if model:
-        config["model"] = model
+        server_config["model"] = model
 
-    await set_config(ctx.guild_id, config)
+    await config.set_server_config(ctx.guild_id, server_config)
 
     await ctx.followup.send("Server config updated <3 <3")
 
@@ -96,9 +84,9 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, acc
 
     print(f"summarize request: {num_messages=} {len(raw_messages)=} {len(messages)=}")
 
-    config = get_config(ctx.guild_id)
+    server_config = config.get_server_config(ctx.guild_id)
 
-    profile = config.get("profile", "")
+    profile = server_config.get("profile", "")
 
     print(profile)
 
@@ -108,9 +96,8 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, acc
 
     summarizer = Summarizer(
         key=openai_api_key, 
-        model_override=config.get("model", None),
+        model_override=server_config.get("model", None),
         profile=profile,
-        # profile=config.get("profile", None),
     )
     
     summary = await summarizer.summarize(messages)
