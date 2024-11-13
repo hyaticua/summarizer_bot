@@ -10,8 +10,7 @@ from config import Config
 
 
 
-
-message_limit = 100
+message_limit = 1000
 root_user = ".namielle"
 
 
@@ -33,7 +32,7 @@ async def on_ready():
 
 
 @bot.slash_command()
-async def config(ctx: discord.ApplicationContext, profile: str = None, model: str = None):
+async def admin(ctx: discord.ApplicationContext, profile: str = None, model: str = None):
     if ctx.author.name != root_user:
         await ctx.send_response(
             content="Sorry, you don't have permission to use this command!", 
