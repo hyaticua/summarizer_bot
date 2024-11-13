@@ -24,11 +24,17 @@ class Config:
         async with aiofiles.open("config.json", mode="w") as f:
             await f.write(json.dumps(self.global_config, indent=2))
 
+    def has_server_config(self, id: int) -> bool:
+        return id in self.global_config["servers"]
+
     def get_server_config(self, id: int) -> dict:
         return self._get_config(id, "servers")
 
     async def set_server_config(self, id: int, configuration: dict):
         return self._set_config(id, "servers", configuration)
+    
+    def has_user_config(self, id: int) -> bool:
+        return id in self.global_config["users"]
 
     def get_user_config(self, id: int) -> dict:
         return self._get_config(id, "users")

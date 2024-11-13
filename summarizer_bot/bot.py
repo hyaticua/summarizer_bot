@@ -30,6 +30,17 @@ async def on_ready():
     print(f"We have logged in as {bot.user}")
 
 
+@bot.slash_command()
+async def register_user(ctx: discord.ApplicationContext, info: str):
+    await ctx.defer()
+
+    user_config = config.get_server_config(ctx.author.id)
+
+    user_config["info"] = info
+
+    await config.set_server_config(ctx.author.id, user_config)
+    await ctx.followup.send("User configuration updated <3")
+
 
 @bot.slash_command()
 async def admin(ctx: discord.ApplicationContext, profile: str = None, model: str = None):
@@ -49,7 +60,6 @@ async def admin(ctx: discord.ApplicationContext, profile: str = None, model: str
         server_config["model"] = model
 
     await config.set_server_config(ctx.guild_id, server_config)
-
     await ctx.followup.send("Server config updated <3 <3")
 
 
@@ -68,6 +78,7 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, acc
     raw_messages.reverse()
 
     messages = []
+    involved_users = set()
 
     for msg in raw_messages:
         # skip bots and empty messages
@@ -75,23 +86,22 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, acc
             continue
 
         author = msg.author
-        # if not isinstance(author, discord.Member):
-        #     members = await msg.guild.query_members(user_ids=[msg.author.id])
-        #     author = members[0]
 
         messages.append(Message.convert(msg, author))
-
-    print(f"summarize request: {num_messages=} {len(raw_messages)=} {len(messages)=}")
+        involved_users.add(author)
 
     server_config = config.get_server_config(ctx.guild_id)
-
     profile = server_config.get("profile", "")
 
-    print(profile)
-
     if accent:
-        profile += (f" Prioritize writing your summaries in an over the top way with an accent from or in the manner of {accent}. "
-                     "If the accent is something non-human like a dog, then instead summarize role-playing as that thing. ")
+        profile += (f" Prioritize writing your summaries in way with an accent obviously from or in the manner of {accent}. "
+                     "If the accent is something non-human like a dog, then instead summarize role-playing as that thing like \"bark, woof\" etc.")
+    
+    user_metadata = []
+    for user in involved_users:
+        if config.has_user_config(user.id):
+            user_info = config.get_user_config(user.id)["info"]
+            user_metadata.append({"name": user.display_name, "info": user_info})
 
     summarizer = Summarizer(
         key=openai_api_key, 
@@ -99,7 +109,7 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, acc
         profile=profile,
     )
     
-    summary = await summarizer.summarize(messages)
+    summary = await summarizer.summarize(messages, user_metadata)
     await ctx.followup.send(summary)
 
 
