@@ -34,7 +34,7 @@ class Config:
         return self._set_config(id, "servers", configuration)
     
     def has_user_config(self, id: int) -> bool:
-        return id in self.global_config["users"]
+        return "users" in self.global_config and id in self.global_config["users"]
 
     def get_user_config(self, id: int) -> dict:
         return self._get_config(id, "users")
