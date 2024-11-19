@@ -82,7 +82,7 @@ async def on_message(message: discord.Message):
         # if message.reference:
         #     prev_message = await message.channel.fetch_message(message.reference.message_id)
 
-        raw_messages = await fetch_messages(message.channel.id)
+        raw_messages = await fetch_messages(message.channel.id, num_messages=100)
         messages, involved_users = process_messages(raw_messages)
         msg_str, user_profs_str = concat_messages(messages, involved_users)
 
