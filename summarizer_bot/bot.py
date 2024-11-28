@@ -84,13 +84,17 @@ def build_json(messages: list[Message], involved_users: set[discord.Member]) -> 
 @bot.event
 async def on_ready():
     print(f"We have logged in as {bot.user}")
+    for guild in bot.guilds:
+        print(f"{guild.id=} {guild.name=}")
+        await guild.me.edit(nick="MommyBot")
 
 
-def make_sys_prompt() -> str: 
+def make_sys_prompt(guild: discord.Guild) -> str: 
     time_of_day = time.strftime("%H:%M")
     day = time.strftime("%Y-%m-%d")
 
-    return json.dumps(persona, indent=2)
+    prompt = json.dumps(persona, indent=2)
+    return prompt % guild.me.display_name
 
 
 
@@ -138,7 +142,8 @@ async def on_message(message: discord.Message):
         messages_json, profiles_json = build_json(messages, involved_users)
         prompt = make_prompt_json(messages_json, profiles_json, message)
 
-        sys_prompt = make_sys_prompt()
+        sys_prompt = make_sys_prompt(message.guild)
+        # print(f"{sys_prompt=}")
         
         # print(f"{prompt=}")
         
