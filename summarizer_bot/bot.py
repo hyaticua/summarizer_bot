@@ -1,7 +1,7 @@
 import os
 
 import discord
-from message import Message, UserProfile
+from message import Message, UserProfile, parse_response
 from summarizer import LLMClient
 
 from loguru import logger
@@ -21,13 +21,18 @@ print(f"discord_api_key {discord_api_key}")
 print(f"openai_api_key {openai_api_key}")
 
 
-bot = discord.Bot()
-config = Config("config.json")
+intents = discord.Intents().default()
+intents.members = True
+
+bot = discord.Bot(intents=intents)
+config = Config.try_init_from_file("config.json")
 llm_client = LLMClient(openai_api_key)
 
-Author = discord.User | discord.Member
+with open("personas/mommy.json", "r") as f:
+    persona = json.load(f)
 
-def get_user_profiles(involved_users: set[Author]) -> list[UserProfile]:
+
+def get_user_profiles(involved_users: set[discord.Member]) -> list[UserProfile]:
     user_profiles = []
     for user in involved_users:
         if config.has_user_config(user.id):
@@ -47,13 +52,13 @@ async def fetch_messages(channel_id, num_messages = message_limit) -> list[disco
     return raw_messages
 
 
-def process_messages(raw_messages: list[discord.Message]) -> tuple[list[Message], set[Author]]:
+def process_messages(raw_messages: list[discord.Message], skip_bots: bool = True) -> tuple[list[Message], set[discord.Member]]:
     messages = []
     involved_users = set()
 
     for msg in raw_messages:
         # skip bots and empty messages
-        if not msg.content or (msg.author.bot and not msg.reference):
+        if not msg.content or (skip_bots and msg.author.bot and not msg.reference):
             continue
 
         messages.append(Message(msg))
@@ -62,10 +67,18 @@ def process_messages(raw_messages: list[discord.Message]) -> tuple[list[Message]
     return messages, involved_users
 
 
-def concat_messages(messages: list[Message], involved_users: set[Author]) -> tuple[str, str]:
+def concat_messages(messages: list[Message], involved_users: set[discord.Member]) -> tuple[str, str]:
     concat_msgs = "\n".join(str(msg) for msg in messages)
     concat_profs = "\n".join([str(prof) for prof in get_user_profiles(involved_users)])
     return concat_msgs, concat_profs
+
+
+def build_json(messages: list[Message], involved_users: set[discord.Member]) -> tuple[list[dict], list[dict]]:
+    return (
+        [m.to_json() for m in messages],
+        [p.to_json() for p in get_user_profiles(involved_users)]
+    )
+
 
 
 @bot.event
@@ -73,34 +86,67 @@ async def on_ready():
     print(f"We have logged in as {bot.user}")
 
 
+def make_sys_prompt() -> str: 
+    time_of_day = time.strftime("%H:%M")
+    day = time.strftime("%Y-%m-%d")
+
+    return json.dumps(persona, indent=2)
+
+
+
+def make_prompt(msg_str: str, message: discord.Message, user_profs_str: str | None = None) -> str:
+    prompt = ""
+    if user_profs_str:
+        prompt += f"<USER PROFILES START>\n\n{user_profs_str}\n\n<USER PROFILES END>\n\n"
+
+    prompt += (f"<CHAT HISTORY START>\n\n{msg_str}\n\n<CHAT HISTORY END>\n\n"
+                f"You are responding to the following messsage:\n <MESSAGE START>\n{Message(message)}\n<MESSAGE END>"
+                "Your response: ")
+    
+    return prompt
+
+def make_prompt_json(messages: list[dict], profiles: list[dict], reply_message: discord.Message) -> str:
+    data = {
+        "chat_history" : messages,
+    }
+    if profiles:
+        data["profiles"] = profiles
+
+    to_reply = json.dumps(Message(reply_message).to_json())
+
+    prompt = (
+        f"{json.dumps(data)}\n\n"
+        f"You are responding to the following message:\n"
+        f"{to_reply}\n\n"
+        f"Your response: "
+    )
+    
+    return prompt
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
         
     if isinstance(message.channel, discord.channel.DMChannel) or (bot.user and bot.user.mentioned_in(message)):
-        # if message.reference:
-        #     prev_message = await message.channel.fetch_message(message.reference.message_id)
+        raw_messages = await fetch_messages(message.channel.id, num_messages=50)
+        messages, involved_users = process_messages(raw_messages, False)
 
-        raw_messages = await fetch_messages(message.channel.id, num_messages=100)
-        messages, involved_users = process_messages(raw_messages)
-        msg_str, user_profs_str = concat_messages(messages, involved_users)
+        # msg_str, user_profs_str = concat_messages(messages, involved_users)
+        # prompt = make_prompt(msg_str, message, user_profs_str)
 
-        time_of_day = time.strftime("%H:%M")
-        day = time.strftime("%Y-%m-%d")
-        sys_prompt = (f"You are an angry marxist who is chatting on a server for discussing Bushwick, Brooklyn. Feel free to use colorful language and even be mean! Try to imitate a human. You should behave like a normal chat participant, not an assistant!"
-                      f" It is currently {time_of_day} on {day}. "
-                      f"Your username in the chat is {bot.user.display_name}. ")
+        messages_json, profiles_json = build_json(messages, involved_users)
+        prompt = make_prompt_json(messages_json, profiles_json, message)
+
+        sys_prompt = make_sys_prompt()
         
-        prompt = ""
-        if user_profs_str:
-            prompt += f"<USER PROFILES START>\n\n{user_profs_str}\n\n<USER PROFILES END>\n\n"
-
-        prompt += (f"<CHAT HISTORY START>\n\n{msg_str}\n\n<CHAT HISTORY END>\n\n"
-                   f"You are responding to the following messsage:\n <MESSAGE START>\n{Message(message)}\n<MESSAGE END>"
-                    "Your response: ")
+        # print(f"{prompt=}")
         
         response = await llm_client.generate(prompt, sys_prompt)
+        response = parse_response(response, message.guild)
+
+        # print(f"message={message.content}")
+    
         await message.reply(response)
         
 
@@ -149,6 +195,8 @@ async def register_user(ctx: discord.ApplicationContext, info: str):
 
 @bot.slash_command()
 async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, accent: str = None):
+    await ctx.defer()
+
     raw_messages = await fetch_messages(ctx.channel_id, num_messages)
     messages, involved_users = process_messages(raw_messages)
     msg_str, user_profs_str = concat_messages(messages, involved_users)

@@ -25,7 +25,7 @@ class Config:
             await f.write(json.dumps(self.global_config, indent=2))
 
     def has_server_config(self, id: int) -> bool:
-        return id in self.global_config["servers"]
+        return "servers" in self.global_config and id in self.global_config["servers"]
 
     def get_server_config(self, id: int) -> dict:
         return self._get_config(id, "servers")
