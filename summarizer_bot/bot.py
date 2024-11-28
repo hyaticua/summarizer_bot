@@ -37,7 +37,7 @@ def get_user_profiles(involved_users: set[discord.Member]) -> list[UserProfile]:
     for user in involved_users:
         if config.has_user_config(user.id):
             user_info = config.get_user_config(user.id)["info"]
-            user_profiles.append(UserProfile(user.display_name, user_info))
+            user_profiles.append(UserProfile(user.nick, user_info))
     return user_profiles
 
 
@@ -148,9 +148,9 @@ async def on_message(message: discord.Message):
         # print(f"{prompt=}")
         
         response = await llm_client.generate(prompt, sys_prompt)
+        # print(f"raw {response=}")
         response = parse_response(response, message.guild)
 
-        # print(f"message={message.content}")
     
         await message.reply(response)
         

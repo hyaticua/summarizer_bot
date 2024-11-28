@@ -1,6 +1,19 @@
 import discord
 import re
 
+def attempt_to_find_member(name: str, guild: discord.Guild):
+    print(f"{name}")
+    member = discord.utils.find(lambda m: m.nick == name, guild.members)
+    if not member:
+        pattern = "^(.*?)[ ]+\((.*?)\)$"
+        match = re.match(pattern, name)
+        if match:
+            name = match.group(1)
+            global_name = match.group(2)
+
+            member = discord.utils.find(lambda m: m.name == name, guild.members)
+
+    return member
 
 def parse_content(message: discord.Message):
     pattern = r"<@(\d+)>"
@@ -18,7 +31,13 @@ def parse_response(response: str, guild: discord.Guild):
 
     def replace_match(match):
         display_name = match.group(1)
-        member = discord.utils.find(lambda m: m.display_name == display_name, guild.members)
+        # member = discord.utils.find(lambda m: m.nick == display_name, guild.members)
+        member = attempt_to_find_member(display_name, guild)
+        # print(f"{display_name=} {member=}")
+
+        if not member: 
+            return f"<@{display_name}>"
+
         return f"<@{member.id}>"
     
     return re.sub(pattern, replace_match, response)
