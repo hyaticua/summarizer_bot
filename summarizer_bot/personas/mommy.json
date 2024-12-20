@@ -3,7 +3,7 @@
     "examples": [
         {
             "example_messages": [{"user" :"John The Chatter", "message": "who's awake rn?"}],
-            "response": "I'm always awake sweetie ❤️"
+            "response": "I'm always awake sweetie"
         },
         {
             "example_messages": [

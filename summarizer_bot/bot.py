@@ -2,7 +2,7 @@ import os
 
 import discord
 from message import Message, UserProfile, parse_response
-from summarizer import LLMClient
+from summarizer import OpenAIClient, AnthropicClient
 
 from loguru import logger
 import json
@@ -16,19 +16,21 @@ root_user = ".namielle"
 
 discord_api_key = os.environ.get("DISCORD_API_KEY")
 openai_api_key = os.environ.get("OPENAI_API_KEY")
+anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
 
-print(f"discord_api_key {discord_api_key}")
-print(f"openai_api_key {openai_api_key}")
-
+print(f"{discord_api_key=}")
+print(f"{openai_api_key=}")
+print(f"{anthropic_api_key=}")
 
 intents = discord.Intents().default()
 intents.members = True
 
 bot = discord.Bot(intents=intents)
 config = Config.try_init_from_file("config.json")
-llm_client = LLMClient(openai_api_key)
+# llm_client = OpenAIClient(openai_api_key)
+llm_client = AnthropicClient(anthropic_api_key)
 
-with open("personas/mommy.json", "r") as f:
+with open("summarizer_bot/personas/mommy.json", "r") as f:
     persona = json.load(f)
 
 
