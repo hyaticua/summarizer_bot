@@ -98,7 +98,7 @@ class Message:
     def to_json(self) -> dict:
         obj = {
             "message_id": self.id,
-            "created_at": self.created_at,
+            "created_at": str(self.created_at),
             "author" : self.author,
             "content" : self.text,
         }
