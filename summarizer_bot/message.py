@@ -77,6 +77,7 @@ class Message:
         self.author = msg.author.display_name
         self.text = parse_content(msg)
         self.id = msg.id
+        self.created_at = msg.created_at
         self.images: list[Image] = []
         self.from_self = from_self
 
@@ -97,6 +98,7 @@ class Message:
     def to_json(self) -> dict:
         obj = {
             "message_id": self.id,
+            "created_at": self.created_at,
             "author" : self.author,
             "content" : self.text,
         }
