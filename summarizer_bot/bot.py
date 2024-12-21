@@ -54,7 +54,7 @@ async def fetch_messages(channel_id, num_messages = message_limit) -> list[disco
     return raw_messages
 
 
-def process_messages(raw_messages: list[discord.Message], skip_bots: bool = True) -> tuple[list[Message], set[discord.Member]]:
+async def process_messages(raw_messages: list[discord.Message], skip_bots: bool = True) -> tuple[list[Message], set[discord.Member]]:
     messages = []
     involved_users = set()
 
@@ -63,7 +63,7 @@ def process_messages(raw_messages: list[discord.Message], skip_bots: bool = True
         if not msg.content or (skip_bots and msg.author.bot and not msg.reference):
             continue
 
-        messages.append(Message(msg))
+        messages.append(await Message.create(msg))
         involved_users.add(msg.author)
 
     return messages, involved_users
@@ -80,6 +80,8 @@ def build_json(messages: list[Message], involved_users: set[discord.Member]) -> 
         [m.to_json() for m in messages],
         [p.to_json() for p in get_user_profiles(involved_users)]
     )
+
+
 
 
 
@@ -136,24 +138,17 @@ async def on_message(message: discord.Message):
         
     if isinstance(message.channel, discord.channel.DMChannel) or (bot.user and bot.user.mentioned_in(message)):
         raw_messages = await fetch_messages(message.channel.id, num_messages=50)
-        messages, involved_users = process_messages(raw_messages, False)
-
-        # msg_str, user_profs_str = concat_messages(messages, involved_users)
-        # prompt = make_prompt(msg_str, message, user_profs_str)
-
-        messages_json, profiles_json = build_json(messages, involved_users)
-        prompt = make_prompt_json(messages_json, profiles_json, message)
+        messages, involved_users = await process_messages(raw_messages, False)
 
         sys_prompt = make_sys_prompt(message.guild)
-        # print(f"{sys_prompt=}")
-        
-        # print(f"{prompt=}")
-        
-        response = await llm_client.generate(prompt, sys_prompt)
-        # print(f"raw {response=}")
-        response = parse_response(response, message.guild)
 
-    
+        # messages_json, profiles_json = build_json(messages, involved_users)
+        # prompt = make_prompt_json(messages_json, profiles_json, message)
+        # raw_response = await llm_client.generate(prompt, sys_prompt)
+
+        raw_response = await llm_client.generate_as_chat_turns(messages, sys_prompt)
+
+        response = parse_response(raw_response, message.guild)    
         await message.reply(response)
         
 
@@ -205,7 +200,7 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, acc
     await ctx.defer()
 
     raw_messages = await fetch_messages(ctx.channel_id, num_messages)
-    messages, involved_users = process_messages(raw_messages)
+    messages, involved_users = await process_messages(raw_messages)
     msg_str, user_profs_str = concat_messages(messages, involved_users)
 
     server_config = config.get_server_config(ctx.guild_id)

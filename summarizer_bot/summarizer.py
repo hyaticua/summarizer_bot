@@ -1,6 +1,7 @@
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from message import Message
+from itertools import chain
 
 default_sys_prompt = (
     "You are a helpful tool for summarizing segments of chats. "
@@ -46,6 +47,30 @@ class AnthropicClient:
                      ]
                 }                
             ]
+        )
+
+        print(response)
+
+        return response.content[0].text
+    
+    async def generate_as_chat_turns(self, messages: list[Message], sys_prompt: str) -> str:
+        chat_turns = []
+        for msg in messages:
+            obj = {
+                "role": "user",
+                "content": msg.to_chat_turns()
+            }
+            chat_turns.append(obj)
+
+
+        print(chat_turns)
+        print("\n\n")
+
+        response = await self.client.messages.create(
+            model=self.model,
+            system=sys_prompt or default_sys_prompt,
+            max_tokens=2048,
+            messages=chat_turns
         )
 
         print(response)

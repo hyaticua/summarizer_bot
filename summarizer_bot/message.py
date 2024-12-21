@@ -1,5 +1,8 @@
+from dataclasses import dataclass
 import discord
 import re
+import base64
+import json
 
 def attempt_to_find_member(name: str, guild: discord.Guild):
     print(f"{name}")
@@ -58,6 +61,12 @@ class UserProfile:
         }
         return obj
 
+@dataclass
+class Image:
+    data: str
+    content_type: str
+
+
 class Message:
     def __init__(self, msg: discord.Message):
         self.author = msg.author
@@ -66,14 +75,51 @@ class Message:
             self.author = msg.guild.get_member(self.author.id)
 
         self.author = msg.author.display_name
-        self.content = parse_content(msg)
+        self.text = parse_content(msg)
+        self.id = msg.id
+        self.images: list[Image] = []
+
+    @classmethod
+    async def create(cls, msg: discord.Message) -> "Message":
+        obj = cls(msg)
+
+        for attachment in msg.attachments:
+            if "image" in attachment.content_type:
+                image_str = base64.b64encode(await attachment.read(use_cached=True)).decode()
+                image = Image(image_str, attachment.content_type)
+                obj.images.append(image)
+        return obj
 
     def __str__(self) -> str:
-        return f"{self.author}: {self.content}"
+        return f"{self.author}: {self.text}"
     
     def to_json(self) -> dict:
         obj = {
-            "user" : self.author,
-            "message" : self.content 
+            "message_id": self.id,
+            "author" : self.author,
+            "content" : self.text,
         }
         return obj
+    
+    def to_chat_turns(self) -> list[dict]:
+        objs = []
+
+        if self.text:
+            text_obj = {
+                "type": "text",
+                "text": json.dumps(self.to_json()),
+            }
+            objs.append(text_obj)
+
+        for image in self.images:
+            img_obj = {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image.content_type,
+                    "data": image.data,
+                }
+            }
+            objs.append(img_obj)
+
+        return objs
