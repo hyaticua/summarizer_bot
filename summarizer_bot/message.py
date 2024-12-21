@@ -68,7 +68,7 @@ class Image:
 
 
 class Message:
-    def __init__(self, msg: discord.Message):
+    def __init__(self, msg: discord.Message, from_self: bool = False):
         self.author = msg.author
         if isinstance(self.author, discord.User):
             # print(f"{self.author.id=}")
@@ -78,10 +78,11 @@ class Message:
         self.text = parse_content(msg)
         self.id = msg.id
         self.images: list[Image] = []
+        self.from_self = from_self
 
     @classmethod
-    async def create(cls, msg: discord.Message) -> "Message":
-        obj = cls(msg)
+    async def create(cls, msg: discord.Message, from_self: bool = False) -> "Message":
+        obj = cls(msg, from_self)
 
         for attachment in msg.attachments:
             if "image" in attachment.content_type:
@@ -107,7 +108,7 @@ class Message:
         if self.text:
             text_obj = {
                 "type": "text",
-                "text": json.dumps(self.to_json()),
+                "text": json.dumps(self.to_json()) if not self.from_self else self.text,
             }
             objs.append(text_obj)
 

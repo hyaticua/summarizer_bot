@@ -63,7 +63,8 @@ async def process_messages(raw_messages: list[discord.Message], skip_bots: bool 
         if not msg.content or (skip_bots and msg.author.bot and not msg.reference):
             continue
 
-        messages.append(await Message.create(msg))
+        processed_msg = await Message.create(msg, from_self=msg.author.id == bot.user.id)
+        messages.append(processed_msg)
         involved_users.add(msg.author)
 
     return messages, involved_users

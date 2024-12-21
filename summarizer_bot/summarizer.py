@@ -49,17 +49,23 @@ class AnthropicClient:
             ]
         )
 
-        print(response)
+        # print(response)
 
         return response.content[0].text
     
     async def generate_as_chat_turns(self, messages: list[Message], sys_prompt: str) -> str:
         chat_turns = []
         for msg in messages:
-            obj = {
-                "role": "user",
-                "content": msg.to_chat_turns()
-            }
+            if msg.from_self:
+                obj = {
+                    "role": "assistant",
+                    "content": msg.text
+                }
+            else:
+                obj = {
+                    "role": "user",
+                    "content": msg.to_chat_turns()
+                }
             chat_turns.append(obj)
 
 
@@ -73,6 +79,6 @@ class AnthropicClient:
             messages=chat_turns
         )
 
-        print(response)
+        # print(response)
 
         return response.content[0].text
