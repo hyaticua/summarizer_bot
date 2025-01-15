@@ -66,12 +66,15 @@ class Image:
     data: str
     content_type: str
 
+    @classmethod
+    async def create(cls, attachment: discord.Attachment) -> "Image":
+        image_str = base64.b64encode(await attachment.read(use_cached=True)).decode()
+        return cls(image_str, attachment.content_type)
 
 class Message:
     def __init__(self, msg: discord.Message, from_self: bool = False):
         self.author = msg.author
         if isinstance(self.author, discord.User):
-            # print(f"{self.author.id=}")
             self.author = msg.guild.get_member(self.author.id)
 
         self.author = msg.author.display_name
@@ -87,11 +90,9 @@ class Message:
 
         for attachment in msg.attachments:
             if "image" in attachment.content_type:
-                image_str = base64.b64encode(await attachment.read(use_cached=True)).decode()
-                image = Image(image_str, attachment.content_type)
-                obj.images.append(image)
+                obj.images.append(Image.create(attachment))
         return obj
-
+    
     def __str__(self) -> str:
         return f"{self.author}: {self.text}"
     
