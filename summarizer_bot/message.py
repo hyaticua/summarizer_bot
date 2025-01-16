@@ -69,6 +69,7 @@ class Image:
     @classmethod
     async def create(cls, attachment: discord.Attachment) -> "Image":
         image_str = base64.b64encode(await attachment.read(use_cached=True)).decode()
+        
         return cls(image_str, attachment.content_type)
 
 class Message:
@@ -90,7 +91,7 @@ class Message:
 
         for attachment in msg.attachments:
             if "image" in attachment.content_type:
-                obj.images.append(Image.create(attachment))
+                obj.images.append(await Image.create(attachment))
         return obj
     
     def __str__(self) -> str:
