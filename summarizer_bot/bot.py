@@ -131,26 +131,6 @@ def make_prompt_json(messages: list[dict], profiles: list[dict], reply_message: 
     )
     
     return prompt
-
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author == bot.user:
-        return
-        
-    if isinstance(message.channel, discord.channel.DMChannel) or (bot.user and bot.user.mentioned_in(message)):
-        raw_messages = await fetch_messages(message.channel.id, num_messages=50)
-        messages, involved_users = await process_messages(raw_messages, False)
-
-        sys_prompt = make_sys_prompt(message.guild)
-
-        # messages_json, profiles_json = build_json(messages, involved_users)
-        # prompt = make_prompt_json(messages_json, profiles_json, message)
-        # raw_response = await llm_client.generate(prompt, sys_prompt)
-
-        raw_response = await llm_client.generate_as_chat_turns(messages, sys_prompt)
-
-        response = parse_response(raw_response, message.guild)    
-        await message.reply(response)
         
 
 @bot.slash_command()
@@ -200,28 +180,52 @@ async def register_user(ctx: discord.ApplicationContext, info: str):
 async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, accent: str = None):
     await ctx.defer()
 
-    raw_messages = await fetch_messages(ctx.channel_id, num_messages)
-    messages, involved_users = await process_messages(raw_messages)
-    msg_str, user_profs_str = concat_messages(messages, involved_users)
+    try:
+        raw_messages = await fetch_messages(ctx.channel_id, num_messages)
+        messages, involved_users = await process_messages(raw_messages)
+        msg_str, user_profs_str = concat_messages(messages, involved_users)
 
-    server_config = config.get_server_config(ctx.guild_id)
-    profile = server_config.get("profile", "")
+        server_config = config.get_server_config(ctx.guild_id)
+        profile = server_config.get("profile", "")
 
-    if accent:
-        profile += (f" Prioritize writing your summaries in way with an accent obviously from or in the manner of {accent}. "
-                     "If the accent is something non-human, then instead summarize attempting to roleplay as that thing. ")
+        if accent:
+            profile += (f" Prioritize writing your summaries in way with an accent obviously from or in the manner of {accent}. "
+                        "If the accent is something non-human, then instead summarize attempting to roleplay as that thing. ")
 
-    if not msg_str:
-        return "Sorry, there was nothing to summarize :)"
-    
-    prompt = (f"Additional instructions: {profile}\n\n"
-              f"User profiles: \n{user_profs_str}\n\n"
-              f"Chat log: \n{msg_str}\n\n"
-               "Summary: ")
-    
-    summary = await llm_client.generate(prompt)
-    await ctx.followup.send(summary)
+        if not msg_str:
+            return "Sorry, there was nothing to summarize :)"
+        
+        prompt = (f"Additional instructions: {profile}\n\n"
+                f"User profiles: \n{user_profs_str}\n\n"
+                f"Chat log: \n{msg_str}\n\n"
+                "Summary: ")
+        
+        summary = await llm_client.generate(prompt)
+        await ctx.followup.send(summary)
+    except discord.errors.Forbidden as e:
+        await ctx.author.send("Sorry it looks like I don't have access!")
+        await ctx.delete()
+        # ctx.followup.send("Sorry it looks like I don't have access!")
 
+
+@bot.event
+async def on_message(message: discord.Message):
+    try:
+        if message.author == bot.user:
+            return
+            
+        if isinstance(message.channel, discord.channel.DMChannel) or (bot.user and bot.user.mentioned_in(message)):
+            raw_messages = await fetch_messages(message.channel.id, num_messages=50)
+            messages, involved_users = await process_messages(raw_messages, False)
+
+            sys_prompt = make_sys_prompt(message.guild)
+
+            raw_response = await llm_client.generate_as_chat_turns(messages, sys_prompt)
+
+            response = parse_response(raw_response, message.guild)    
+            await message.reply(response)
+    except discord.errors.Forbidden as e:
+        await message.author.send("Sorry it looks like I don't have access!")
 
 def run():
     bot.run(discord_api_key)
