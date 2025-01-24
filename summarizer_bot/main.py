@@ -1,6 +1,8 @@
 import os
 
 import discord
+from discord.ext.commands import TextChannelConverter
+
 from message import Message, UserProfile, parse_response
 from summarizer import OpenAIClient, AnthropicClient
 
@@ -155,26 +157,6 @@ async def register_user(ctx: discord.ApplicationContext, info: str):
     await ctx.followup.send("User configuration updated <3")
 
 
-# @bot.slash_command()
-# async def admin(ctx: discord.ApplicationContext, profile: str = None, model: str = None):
-#     if ctx.author.name != root_user:
-#         await ctx.send_response(
-#             content="Sorry, you don't have permission to use this command!", 
-#             ephemeral=True)
-#         return
-    
-#     await ctx.defer()
-    
-#     server_config = config.get_server_config(ctx.guild_id)
-
-#     if profile:
-#         server_config["profile"] = profile
-#     if model:
-#         server_config["model"] = model
-
-#     await config.set_server_config(ctx.guild_id, server_config)
-#     await ctx.followup.send("Server config updated <3 <3")
-
 
 @bot.slash_command()
 async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, accent: str = None):
@@ -212,6 +194,10 @@ async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, acc
 async def on_message(message: discord.Message):
     try:
         if message.author == bot.user:
+            return
+        
+        server_config = config.get_server_config(message.guild.id)
+        if "chat_allowlist" in server_config and server_config["chat_allowlist"] and message.channel.id not in server_config["chat_allowlist"]:
             return
             
         if isinstance(message.channel, discord.channel.DMChannel) or (bot.user and bot.user.mentioned_in(message)):
