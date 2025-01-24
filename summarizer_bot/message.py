@@ -31,19 +31,16 @@ def parse_content(message: discord.Message):
 
 
 def parse_response(response: str, guild: discord.Guild):
-    pattern = r"<@(.*)>"
+    pattern = r"@?<@?(.*)>"
 
     def replace_match(match):
         display_name = match.group(1)
-        # member = discord.utils.find(lambda m: m.nick == display_name, guild.members)
         member = attempt_to_find_member(display_name, guild)
-        # print(f"{display_name=} {member=}")
-
         if not member: 
             return f"<@{display_name}>"
 
         return f"<@{member.id}>"
-    
+        
     return re.sub(pattern, replace_match, response)
 
 
