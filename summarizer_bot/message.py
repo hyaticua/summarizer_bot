@@ -3,9 +3,10 @@ import discord
 import re
 import base64
 import json
+from discord.ext.commands import MemberConverter
 
 def attempt_to_find_member(name: str, guild: discord.Guild):
-    print(f"{name}")
+    # print(f"{name}")
     member = discord.utils.find(lambda m: m.nick == name, guild.members)
     if not member:
         pattern = "^(.*?)[ ]+\((.*?)\)$"

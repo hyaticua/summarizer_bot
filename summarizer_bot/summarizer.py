@@ -69,8 +69,8 @@ class AnthropicClient:
             chat_turns.append(obj)
 
 
-        print(chat_turns)
-        print("\n\n")
+        # print(chat_turns)
+        # print("\n\n")
 
         response = await self.client.messages.create(
             model=self.model,
