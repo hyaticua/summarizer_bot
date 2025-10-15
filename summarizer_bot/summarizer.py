@@ -29,7 +29,7 @@ class OpenAIClient:
 class AnthropicClient:
     def __init__(self, key, model: str = None) -> None:
         self.client = AsyncAnthropic(api_key=key)
-        self.model = model or "claude-3-5-sonnet-20241022"
+        self.model = model or "claude-sonnet-4-5-20250929"
 
     async def generate(self, prompt: str, sys_prompt: str = None) -> str:
         response = await self.client.messages.create(
