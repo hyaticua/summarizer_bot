@@ -1,5 +1,6 @@
 import aiofiles
 import json
+from collections import defaultdict
 
 class Config:
     def __init__(self, global_config: dict):
@@ -7,12 +8,14 @@ class Config:
 
     @staticmethod
     def try_init_from_file(path: str) -> "Config":
+        global_config = defaultdict(dict)
+
         try:
             with open(path, "r") as f:
-                global_config = json.loads(f.read())
-        except:
-            global_config = {}
-        
+                global_config.update(json.loads(f.read()))
+        except FileNotFoundError:
+            pass
+
         return Config(global_config)
 
     def _get_config(self, id: int, category: str) -> dict:
@@ -31,7 +34,7 @@ class Config:
         return self._get_config(id, "servers")
 
     async def set_server_config(self, id: int, configuration: dict):
-        return self._set_config(id, "servers", configuration)
+        return await self._set_config(id, "servers", configuration)
     
     def has_user_config(self, id: int) -> bool:
         return "users" in self.global_config and id in self.global_config["users"]
@@ -39,5 +42,5 @@ class Config:
     def get_user_config(self, id: int) -> dict:
         return self._get_config(id, "users")
 
-    async def set_server_config(self, id: int, configuration: dict):
-        return self._set_config(id, "users", configuration)
+    async def set_user_config(self, id: int, configuration: dict):
+        return await self._set_config(id, "users", configuration)

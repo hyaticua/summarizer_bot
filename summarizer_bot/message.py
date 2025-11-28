@@ -3,9 +3,10 @@ import discord
 import re
 import base64
 import json
+from discord.ext.commands import MemberConverter
 
 def attempt_to_find_member(name: str, guild: discord.Guild):
-    print(f"{name}")
+    # print(f"{name}")
     member = discord.utils.find(lambda m: m.nick == name, guild.members)
     if not member:
         pattern = "^(.*?)[ ]+\((.*?)\)$"
@@ -30,19 +31,16 @@ def parse_content(message: discord.Message):
 
 
 def parse_response(response: str, guild: discord.Guild):
-    pattern = r"<@(.*)>"
+    pattern = r"@?<@?(.*)>"
 
     def replace_match(match):
         display_name = match.group(1)
-        # member = discord.utils.find(lambda m: m.nick == display_name, guild.members)
         member = attempt_to_find_member(display_name, guild)
-        # print(f"{display_name=} {member=}")
-
         if not member: 
             return f"<@{display_name}>"
 
         return f"<@{member.id}>"
-    
+        
     return re.sub(pattern, replace_match, response)
 
 

@@ -1,234 +1,93 @@
-import os
-
 import discord
-from message import Message, UserProfile, parse_response
-from summarizer import OpenAIClient, AnthropicClient
-
-from loguru import logger
-import json
 from config import Config
-import time
-
+from summarizer import AnthropicClient
+import json
+from utils import make_sys_prompt
+from message import parse_response, UserProfile, Message
 
 message_limit = 1000
-root_user = ".namielle"
 
 
-discord_api_key = os.environ.get("DISCORD_API_KEY")
-openai_api_key = os.environ.get("OPENAI_API_KEY")
-anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+class ChatBot(discord.bot.Bot):
+    def __init__(self, root_user, llm_api_key, persona_path=None):
+        super().__init__(intents=self._setup_intents())
+        self.root_user = root_user
+        self.llm_api_key = llm_api_key
+        self.persona = self._setup_persona(persona_path)
 
-print(f"{discord_api_key=}")
-print(f"{openai_api_key=}")
-print(f"{anthropic_api_key=}")
+        self.config = Config.try_init_from_file("config.json")
+        self.llm_client = AnthropicClient(self.llm_api_key)
 
-intents = discord.Intents().default()
-intents.members = True
-
-bot = discord.Bot(intents=intents)
-config = Config.try_init_from_file("config.json")
-# llm_client = OpenAIClient(openai_api_key)
-llm_client = AnthropicClient(anthropic_api_key)
-
-with open("summarizer_bot/personas/mommy.json", "r") as f:
-    persona = json.load(f)
-
-
-def get_user_profiles(involved_users: set[discord.Member]) -> list[UserProfile]:
-    user_profiles = []
-    for user in involved_users:
-        if config.has_user_config(user.id):
-            user_info = config.get_user_config(user.id)["info"]
-            user_profiles.append(UserProfile(user.nick, user_info))
-    return user_profiles
-
-
-async def fetch_messages(channel_id, num_messages = message_limit) -> list[discord.Message]:
-    num_messages = min(num_messages, message_limit)
-
-    chan = bot.get_channel(channel_id)
-
-    raw_messages = await chan.history(limit=num_messages).flatten()
-    raw_messages.reverse()    
+    def _setup_intents(self):
+        intents = discord.Intents().default()
+        intents.members = True
+        return intents
     
-    return raw_messages
-
-
-async def process_messages(raw_messages: list[discord.Message], skip_bots: bool = True) -> tuple[list[Message], set[discord.Member]]:
-    messages = []
-    involved_users = set()
-
-    for msg in raw_messages:
-        # skip bots and empty messages
-        if not msg.content or (skip_bots and msg.author.bot and not msg.reference):
-            continue
-
-        processed_msg = await Message.create(msg, from_self=msg.author.id == bot.user.id)
-        messages.append(processed_msg)
-        involved_users.add(msg.author)
-
-    return messages, involved_users
-
-
-def concat_messages(messages: list[Message], involved_users: set[discord.Member]) -> tuple[str, str]:
-    concat_msgs = "\n".join(str(msg) for msg in messages)
-    concat_profs = "\n".join([str(prof) for prof in get_user_profiles(involved_users)])
-    return concat_msgs, concat_profs
-
-
-def build_json(messages: list[Message], involved_users: set[discord.Member]) -> tuple[list[dict], list[dict]]:
-    return (
-        [m.to_json() for m in messages],
-        [p.to_json() for p in get_user_profiles(involved_users)]
-    )
-
-
-
-
-
-@bot.event
-async def on_ready():
-    print(f"We have logged in as {bot.user}")
-    for guild in bot.guilds:
-        print(f"{guild.id=} {guild.name=}")
-        await guild.me.edit(nick="MommyBot")
-
-
-def make_sys_prompt(guild: discord.Guild) -> str: 
-    time_of_day = time.strftime("%H:%M")
-    day = time.strftime("%Y-%m-%d")
-
-    prompt = json.dumps(persona, indent=2)
-    return prompt % guild.me.display_name
-
-
-
-def make_prompt(msg_str: str, message: discord.Message, user_profs_str: str | None = None) -> str:
-    prompt = ""
-    if user_profs_str:
-        prompt += f"<USER PROFILES START>\n\n{user_profs_str}\n\n<USER PROFILES END>\n\n"
-
-    prompt += (f"<CHAT HISTORY START>\n\n{msg_str}\n\n<CHAT HISTORY END>\n\n"
-                f"You are responding to the following messsage:\n <MESSAGE START>\n{Message(message)}\n<MESSAGE END>"
-                "Your response: ")
+    def _setup_persona(self, path):
+        with open(path, "r") as f:
+            persona = json.load(f)
+        return persona
     
-    return prompt
+    # overload
+    async def on_ready(self):
+        print(f"We have logged in as {self.user}")
+        for guild in self.guilds:
+            print(f"{guild.id=} {guild.name=}")
 
-def make_prompt_json(messages: list[dict], profiles: list[dict], reply_message: discord.Message) -> str:
-    data = {
-        "chat_history" : messages,
-    }
-    if profiles:
-        data["profiles"] = profiles
-
-    to_reply = json.dumps(Message(reply_message).to_json())
-
-    prompt = (
-        f"{json.dumps(data)}\n\n"
-        f"You are responding to the following message:\n"
-        f"{to_reply}\n\n"
-        f"Your response: "
-    )
-    
-    return prompt
-        
-
-@bot.slash_command()
-async def register_user(ctx: discord.ApplicationContext, info: str):
-    await ctx.defer()
-
-    user_config = config.get_server_config(ctx.author.id)
-
-    info = info.strip()
-
-    if len(info) > 128:
-        await ctx.followup.send("Info too big")
-        return
-    
-    if "\n" in info:
-        await ctx.followup.send("newlines not allowed")
-        return
-
-    user_config["info"] = info
-
-    await config.set_server_config(ctx.author.id, user_config)
-    await ctx.followup.send("User configuration updated <3")
-
-
-# @bot.slash_command()
-# async def admin(ctx: discord.ApplicationContext, profile: str = None, model: str = None):
-#     if ctx.author.name != root_user:
-#         await ctx.send_response(
-#             content="Sorry, you don't have permission to use this command!", 
-#             ephemeral=True)
-#         return
-    
-#     await ctx.defer()
-    
-#     server_config = config.get_server_config(ctx.guild_id)
-
-#     if profile:
-#         server_config["profile"] = profile
-#     if model:
-#         server_config["model"] = model
-
-#     await config.set_server_config(ctx.guild_id, server_config)
-#     await ctx.followup.send("Server config updated <3 <3")
-
-
-@bot.slash_command()
-async def summarize(ctx: discord.ApplicationContext, num_messages: int = 20, accent: str = None):
-    await ctx.defer()
-
-    try:
-        raw_messages = await fetch_messages(ctx.channel_id, num_messages)
-        messages, involved_users = await process_messages(raw_messages)
-        msg_str, user_profs_str = concat_messages(messages, involved_users)
-
-        server_config = config.get_server_config(ctx.guild_id)
-        profile = server_config.get("profile", "")
-
-        if accent:
-            profile += (f" Prioritize writing your summaries in way with an accent obviously from or in the manner of {accent}. "
-                        "If the accent is something non-human, then instead summarize attempting to roleplay as that thing. ")
-
-        if not msg_str:
-            return "Sorry, there was nothing to summarize :)"
-        
-        prompt = (f"Additional instructions: {profile}\n\n"
-                f"User profiles: \n{user_profs_str}\n\n"
-                f"Chat log: \n{msg_str}\n\n"
-                "Summary: ")
-        
-        summary = await llm_client.generate(prompt)
-        await ctx.followup.send(summary)
-    except discord.errors.Forbidden as e:
-        await ctx.author.send("Sorry it looks like I don't have access!")
-        await ctx.delete()
-        # ctx.followup.send("Sorry it looks like I don't have access!")
-
-
-@bot.event
-async def on_message(message: discord.Message):
-    try:
-        if message.author == bot.user:
-            return
+    # overload
+    async def on_message(self, message: discord.Message):
+        try:
+            if message.author == self.user:
+                return
             
-        if isinstance(message.channel, discord.channel.DMChannel) or (bot.user and bot.user.mentioned_in(message)):
-            raw_messages = await fetch_messages(message.channel.id, num_messages=50)
-            messages, involved_users = await process_messages(raw_messages, False)
+            server_config = self.config.get_server_config(message.guild.id)
+            if "chat_allowlist" in server_config and server_config["chat_allowlist"] and message.channel.id not in server_config["chat_allowlist"]:
+                return
+                
+            if isinstance(message.channel, discord.channel.DMChannel) or (self.user and self.user.mentioned_in(message)):
+                raw_messages = await self.fetch_messages(message.channel.id, num_messages=50)
+                messages, involved_users = await self.process_messages(raw_messages, False)
 
-            sys_prompt = make_sys_prompt(message.guild)
+                sys_prompt = make_sys_prompt(message.guild, self.persona)
 
-            raw_response = await llm_client.generate_as_chat_turns(messages, sys_prompt)
+                raw_response = await self.llm_client.generate_as_chat_turns(messages, sys_prompt)
 
-            response = parse_response(raw_response, message.guild)    
-            await message.reply(response)
-    except discord.errors.Forbidden as e:
-        await message.author.send("Sorry it looks like I don't have access!")
+                response = parse_response(raw_response, message.guild)    
+                await message.reply(response)
 
-def run():
-    bot.run(discord_api_key)
+        except discord.errors.Forbidden as e:
+            await message.author.send("Sorry it looks like I don't have access!")
 
-if __name__ == "__main__":
-    run()
+    def get_user_profiles(self, involved_users: set[discord.Member]) -> list[UserProfile]:
+        user_profiles = []
+        for user in involved_users:
+            if self.config.has_user_config(user.id):
+                user_info = self.config.get_user_config(user.id)["info"]
+                user_profiles.append(UserProfile(user.nick, user_info))
+        return user_profiles
+
+
+    async def fetch_messages(self, channel_id, num_messages = message_limit) -> list[discord.Message]:
+        num_messages = min(num_messages, message_limit)
+
+        chan = self.get_channel(channel_id)
+
+        raw_messages = await chan.history(limit=num_messages).flatten()
+        raw_messages.reverse()    
+        
+        return raw_messages
+    
+    async def process_messages(self, raw_messages: list[discord.Message], skip_bots: bool = True) -> tuple[list[Message], set[discord.Member]]:
+        messages = []
+        involved_users = set()
+
+        for msg in raw_messages:
+            # skip bots and empty messages
+            if not msg.content or (skip_bots and msg.author.bot and not msg.reference):
+                continue
+
+            processed_msg = await Message.create(msg, from_self=msg.author.id == self.user.id)
+            messages.append(processed_msg)
+            involved_users.add(msg.author)
+
+        return messages, involved_users
