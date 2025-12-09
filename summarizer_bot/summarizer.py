@@ -30,6 +30,7 @@ class AnthropicClient:
     def __init__(self, key, model: str = None) -> None:
         self.client = AsyncAnthropic(api_key=key)
         self.model = model or "claude-sonnet-4-5-20250929"
+        self.haiku_model = "claude-haiku-4-5"
 
     async def generate(self, prompt: str, sys_prompt: str = None) -> str:
         response = await self.client.messages.create(
@@ -82,3 +83,37 @@ class AnthropicClient:
         # print(response)
 
         return response.content[0].text
+
+    async def should_respond(self, recent_messages: list[Message], bot_name: str) -> bool:
+        """Use Haiku to quickly decide if the bot should respond to recent conversation."""
+        # Format recent messages for decision-making
+        context = "\n".join([
+            f"[{msg.author}]: {msg.text}" for msg in recent_messages[-10:]  # Last 10 messages max
+        ])
+
+        decision_prompt = f"""You are {bot_name}, a Discord bot. Based on the recent conversation below, should you naturally join in and respond?
+
+Consider:
+- Is the conversation relevant to something you could contribute to?
+- Would it be natural for you to speak up here, or would it feel forced?
+- Has enough time passed since you last spoke (if you did)?
+- Is this an active conversation where your input would add value?
+
+Recent conversation:
+{context}
+
+Respond with ONLY "yes" or "no" (lowercase)."""
+
+        response = await self.client.messages.create(
+            model=self.haiku_model,
+            max_tokens=10,
+            messages=[
+                {
+                    "role": "user",
+                    "content": decision_prompt
+                }
+            ]
+        )
+
+        decision = response.content[0].text.strip().lower()
+        return decision == "yes"
