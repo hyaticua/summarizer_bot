@@ -31,7 +31,7 @@ def parse_content(message: discord.Message):
 
 
 def parse_response(response: str, guild: discord.Guild):
-    pattern = r"@?<@?(.*)>"
+    pattern = r"@?<@?([^>]+)>"
 
     def replace_match(match):
         display_name = match.group(1)
