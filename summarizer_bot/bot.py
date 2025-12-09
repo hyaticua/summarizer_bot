@@ -5,6 +5,7 @@ import json
 from utils import make_sys_prompt
 from message import parse_response, UserProfile, Message
 from token_estimation import TokenCounter
+import time
 
 message_limit = 1000
 
@@ -18,7 +19,8 @@ class ChatBot(discord.bot.Bot):
 
         self.config = Config.try_init_from_file("config.json")
         self.llm_client = AnthropicClient(self.llm_api_key)
-        self.token_counter = TokenCounter(self.llm_client.client, self.llm_client.model)
+        # use_api=False for fast estimation, use_api=True for accurate API-based counting
+        self.token_counter = TokenCounter(self.llm_client.client, self.llm_client.model, use_api=False)
 
     def _setup_intents(self):
         intents = discord.Intents().default()
@@ -47,19 +49,25 @@ class ChatBot(discord.bot.Bot):
                 return
 
             if isinstance(message.channel, discord.channel.DMChannel) or (self.user and self.user.mentioned_in(message)):
+                start_time = time.time()
+
                 sys_prompt = make_sys_prompt(message.guild, self.persona)
 
                 # Build context with token awareness
                 messages = await self.build_context_with_token_limit(
                     message.channel.id,
                     sys_prompt,
-                    max_messages=50
+                    max_messages=50,
+                    enable_token_counting=True
                 )
 
                 raw_response = await self.llm_client.generate_as_chat_turns(messages, sys_prompt)
 
                 response = parse_response(raw_response, message.guild)
                 await message.reply(response)
+
+                elapsed_time = time.time() - start_time
+                print(f"Bot response latency: {elapsed_time:.2f}s")
 
         except discord.errors.Forbidden as e:
             await message.author.send("Sorry it looks like I don't have access!")
@@ -68,7 +76,8 @@ class ChatBot(discord.bot.Bot):
         self,
         channel_id: int,
         sys_prompt: str,
-        max_messages: int = 50
+        max_messages: int = 50,
+        enable_token_counting: bool = True
     ) -> list[Message]:
         """
         Build message context in reverse (newest to oldest) while staying within token limits.
@@ -81,6 +90,7 @@ class ChatBot(discord.bot.Bot):
             channel_id: The Discord channel ID to fetch from
             sys_prompt: The system prompt (needed for token counting)
             max_messages: Maximum number of messages to fetch initially
+            enable_token_counting: Whether to use token counting (False = just use max_messages)
 
         Returns:
             List of Message objects in chronological order (oldest to newest)
@@ -88,9 +98,16 @@ class ChatBot(discord.bot.Bot):
         # Fetch raw messages
         raw_messages = await self.fetch_messages(channel_id, num_messages=max_messages)
 
+        # If token counting is disabled, just process all messages normally
+        if not enable_token_counting:
+            messages, _ = await self.process_messages(raw_messages, False)
+            return messages
+
         # Process messages in reverse order (newest first)
         messages_to_include = []
         max_tokens = self.token_counter.get_max_context_tokens()
+
+        final_count = 0
 
         # Process from newest to oldest
         for raw_msg in reversed(raw_messages):
@@ -110,11 +127,15 @@ class ChatBot(discord.bot.Bot):
             if token_count <= max_tokens:
                 # We're still within limits, add this message
                 messages_to_include = candidate_messages
+                final_count = token_count
             else:
                 # Adding this message would exceed limits, stop here
                 # We keep what we have (the newest messages)
+                print(f"Token limit reached: {token_count} > {max_tokens}")
                 break
 
+
+        print(f"Final token count for context: {final_count}/{max_tokens}")
         return messages_to_include
 
     def get_user_profiles(self, involved_users: set[discord.Member]) -> list[UserProfile]:
