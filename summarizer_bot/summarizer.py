@@ -84,14 +84,18 @@ class AnthropicClient:
 
         return response.content[0].text
 
-    async def should_respond(self, recent_messages: list[Message], bot_name: str) -> bool:
+    async def should_respond(self, recent_messages: list[Message], bot_name: str, persona_context: str = None) -> bool:
         """Use Haiku to quickly decide if the bot should respond to recent conversation."""
+        # Use default system prompt if none provided
+        if persona_context is None:
+            persona_context = f"You are {bot_name}, a Discord bot."
+
         # Format recent messages for decision-making
         context = "\n".join([
             f"[{msg.author}]: {msg.text}" for msg in recent_messages[-10:]  # Last 10 messages max
         ])
 
-        decision_prompt = f"""You are {bot_name}, a Discord bot. Based on the recent conversation below, should you naturally join in and respond?
+        decision_prompt = f"""Based on the recent conversation below, should you naturally join in and respond?
 
 Consider:
 - Is the conversation relevant to something you could contribute to?
@@ -102,10 +106,11 @@ Consider:
 Recent conversation:
 {context}
 
-Respond with ONLY "yes" or "no" (lowercase)."""
+Respond with ONLY "yes" or "no" (lowercase). If you respond with "no" give a reason."""
 
         response = await self.client.messages.create(
             model=self.haiku_model,
+            system=persona_context,
             max_tokens=10,
             messages=[
                 {
@@ -116,4 +121,6 @@ Respond with ONLY "yes" or "no" (lowercase)."""
         )
 
         decision = response.content[0].text.strip().lower()
+        if not decision == "yes":
+            print(f"Haiku decided not to respond: {decision}")
         return decision == "yes"

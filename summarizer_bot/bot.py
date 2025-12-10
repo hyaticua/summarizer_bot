@@ -29,6 +29,7 @@ class ChatBot(discord.bot.Bot):
     def _setup_intents(self):
         intents = discord.Intents().default()
         intents.members = True
+        intents.message_content = True
         return intents
     
     def _setup_persona(self, path):
@@ -52,9 +53,6 @@ class ChatBot(discord.bot.Bot):
             if "chat_allowlist" in server_config and server_config["chat_allowlist"] and message.channel.id not in server_config["chat_allowlist"]:
                 return
 
-            if isinstance(message.channel, discord.channel.DMChannel) or (self.user and self.user.mentioned_in(message)):
-                start_time = time.time()
-
             # Check if this is an explicit mention/DM or auto-response
             is_explicit = isinstance(message.channel, discord.channel.DMChannel) or (self.user and self.user.mentioned_in(message))
 
@@ -74,9 +72,6 @@ class ChatBot(discord.bot.Bot):
 
                         # Track auto-response time
                         self.last_auto_response[message.channel.id] = datetime.now()
-
-                elapsed_time = time.time() - start_time
-                # print(f"Bot response latency: {elapsed_time:.2f}s")
 
         except discord.errors.Forbidden as e:
             await message.author.send("Sorry it looks like I don't have access!")
@@ -177,16 +172,20 @@ class ChatBot(discord.bot.Bot):
     async def should_auto_respond(self, message: discord.Message, chattiness_config: dict) -> bool:
         """Check heuristics and use LLM to decide if bot should auto-respond."""
 
+        print("should_auto_respond called")
+
         # Heuristic 1: Check cooldown
         channel_id = message.channel.id
         if channel_id in self.last_auto_response:
             time_since_last = datetime.now() - self.last_auto_response[channel_id]
             cooldown = timedelta(seconds=chattiness_config["cooldown_seconds"])
             if time_since_last < cooldown:
+                print(f"Cooldown active: {time_since_last} < {cooldown}")
                 return False
 
         # Heuristic 2: Skip very short messages
         if len(message.content) < chattiness_config["min_message_length"]:
+            print(f"Message too short: {len(message.content)} < {chattiness_config['min_message_length']}")
             return False
 
         # Heuristic 3: Check if enough messages have passed since bot last spoke
@@ -198,17 +197,22 @@ class ChatBot(discord.bot.Bot):
             messages_since_bot += 1
 
         if messages_since_bot < chattiness_config["min_messages_since_last_response"]:
+            print(f"Not enough messages since bot last spoke: {messages_since_bot} < {chattiness_config['min_messages_since_last_response']}")
             return False
 
-        # Heuristic 4: Require multiple messages in conversation (not just one person talking)
-        if chattiness_config.get("require_multiple_messages", True):
-            recent_authors = set(msg.author.id for msg in raw_messages[-5:] if not msg.author.bot)
-            if len(recent_authors) < 2:
-                return False
+        # # Heuristic 4: Require multiple messages in conversation (not just one person talking)
+        # if chattiness_config.get("require_multiple_messages", True):
+        #     recent_authors = set(msg.author.id for msg in raw_messages[-5:] if not msg.author.bot)
+        #     if len(recent_authors) < 2:
+        #         print(f"Not enough unique participants: {len(recent_authors)} < 2")
+        #         return False
 
         # All heuristics passed, now ask Haiku for decision
         processed_messages, _ = await self.process_messages(raw_messages[-10:], skip_bots=False)
-        decision = await self.llm_client.should_respond(processed_messages, self.user.display_name)
+        persona_context = self.persona["context"] % self.user.display_name
+        decision = await self.llm_client.should_respond(processed_messages, self.user.display_name, persona_context)
+
+        print( f"Auto-respond decision: {decision} in channel {channel_id} ")
 
         return decision
 

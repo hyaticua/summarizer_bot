@@ -4,9 +4,9 @@ from collections import defaultdict
 
 # Default chattiness settings
 DEFAULT_CHATTINESS = {
-    "enabled": True,  # Enable auto-chat decision making
-    "cooldown_seconds": 300,  # Wait at least 5 minutes between auto-responses
-    "min_message_length": 10,  # Skip very short messages (heuristic filter)
+    "enabled": False,  # Enable auto-chat decision making
+    "cooldown_seconds": 15,  # Wait at least 5 minutes between auto-responses
+    "min_message_length": 3,  # Skip very short messages (heuristic filter)
     "require_multiple_messages": True,  # Only consider responding after multiple messages in a row
     "min_messages_since_last_response": 3,  # At least 3 messages since bot last spoke
 }
