@@ -67,7 +67,7 @@ class ChatBot(discord.bot.Bot):
                 await message.reply(response)
 
                 elapsed_time = time.time() - start_time
-                print(f"Bot response latency: {elapsed_time:.2f}s")
+                # print(f"Bot response latency: {elapsed_time:.2f}s")
 
         except discord.errors.Forbidden as e:
             await message.author.send("Sorry it looks like I don't have access!")
@@ -135,7 +135,7 @@ class ChatBot(discord.bot.Bot):
                 break
 
 
-        print(f"Final token count for context: {final_count}/{max_tokens}")
+        # print(f"Final token count for context: {final_count}/{max_tokens}")
         return messages_to_include
 
     def get_user_profiles(self, involved_users: set[discord.Member]) -> list[UserProfile]:
