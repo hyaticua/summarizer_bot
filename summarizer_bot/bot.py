@@ -5,6 +5,8 @@ import json
 from utils import make_sys_prompt
 from message import parse_response, UserProfile, Message
 from datetime import datetime, timedelta
+from token_estimation import TokenCounter
+import time
 
 message_limit = 1000
 
@@ -18,6 +20,8 @@ class ChatBot(discord.bot.Bot):
 
         self.config = Config.try_init_from_file("config.json")
         self.llm_client = AnthropicClient(self.llm_api_key)
+        # use_api=False for fast estimation, use_api=True for accurate API-based counting
+        self.token_counter = TokenCounter(self.llm_client.client, self.llm_client.model, use_api=False)
 
         # Track last auto-response time per channel for cooldown
         self.last_auto_response = {}
@@ -48,6 +52,9 @@ class ChatBot(discord.bot.Bot):
             if "chat_allowlist" in server_config and server_config["chat_allowlist"] and message.channel.id not in server_config["chat_allowlist"]:
                 return
 
+            if isinstance(message.channel, discord.channel.DMChannel) or (self.user and self.user.mentioned_in(message)):
+                start_time = time.time()
+
             # Check if this is an explicit mention/DM or auto-response
             is_explicit = isinstance(message.channel, discord.channel.DMChannel) or (self.user and self.user.mentioned_in(message))
 
@@ -68,8 +75,77 @@ class ChatBot(discord.bot.Bot):
                         # Track auto-response time
                         self.last_auto_response[message.channel.id] = datetime.now()
 
+                elapsed_time = time.time() - start_time
+                # print(f"Bot response latency: {elapsed_time:.2f}s")
+
         except discord.errors.Forbidden as e:
             await message.author.send("Sorry it looks like I don't have access!")
+
+    async def build_context_with_token_limit(
+        self,
+        channel_id: int,
+        sys_prompt: str,
+        max_messages: int = 50,
+        enable_token_counting: bool = True
+    ) -> list[Message]:
+        """
+        Build message context in reverse (newest to oldest) while staying within token limits.
+
+        This fetches messages and processes them from newest to oldest, adding them to the
+        context window until we hit the token limit. This ensures we always include the most
+        recent messages and drop the oldest ones if needed.
+
+        Args:
+            channel_id: The Discord channel ID to fetch from
+            sys_prompt: The system prompt (needed for token counting)
+            max_messages: Maximum number of messages to fetch initially
+            enable_token_counting: Whether to use token counting (False = just use max_messages)
+
+        Returns:
+            List of Message objects in chronological order (oldest to newest)
+        """
+        # Fetch raw messages
+        raw_messages = await self.fetch_messages(channel_id, num_messages=max_messages)
+
+        # If token counting is disabled, just process all messages normally
+        if not enable_token_counting:
+            messages, _ = await self.process_messages(raw_messages, False)
+            return messages
+
+        # Process messages in reverse order (newest first)
+        messages_to_include = []
+        max_tokens = self.token_counter.get_max_context_tokens()
+
+        final_count = 0
+
+        # Process from newest to oldest
+        for raw_msg in reversed(raw_messages):
+            # Skip bots and empty messages
+            if not raw_msg.content or (raw_msg.author.bot and not raw_msg.reference):
+                continue
+
+            # Create the message object
+            processed_msg = await Message.create(raw_msg, from_self=raw_msg.author.id == self.user.id)
+
+            # Try adding this message to the beginning of our list
+            candidate_messages = [processed_msg] + messages_to_include
+
+            # Check if adding this message would exceed our token limit
+            token_count = await self.token_counter.count_tokens(candidate_messages, sys_prompt)
+
+            if token_count <= max_tokens:
+                # We're still within limits, add this message
+                messages_to_include = candidate_messages
+                final_count = token_count
+            else:
+                # Adding this message would exceed limits, stop here
+                # We keep what we have (the newest messages)
+                print(f"Token limit reached: {token_count} > {max_tokens}")
+                break
+
+
+        # print(f"Final token count for context: {final_count}/{max_tokens}")
+        return messages_to_include
 
     def get_user_profiles(self, involved_users: set[discord.Member]) -> list[UserProfile]:
         user_profiles = []
@@ -80,16 +156,18 @@ class ChatBot(discord.bot.Bot):
         return user_profiles
 
     async def generate_and_send_response(self, channel_id: int, guild: discord.Guild, reply_to: discord.Message = None) -> None:
-        """Fetch context, generate response, and send it."""
-        raw_messages = await self.fetch_messages(channel_id, num_messages=50)
-        messages, involved_users = await self.process_messages(raw_messages, False)
-
         sys_prompt = make_sys_prompt(guild, self.persona)
 
+        # Build context with token awareness
+        messages = await self.build_context_with_token_limit(
+            channel_id,
+            sys_prompt,
+            max_messages=50,
+            enable_token_counting=True
+        )
         raw_response = await self.llm_client.generate_as_chat_turns(messages, sys_prompt)
 
         response = parse_response(raw_response, guild)
-
         if reply_to:
             await reply_to.reply(response)
         else:
