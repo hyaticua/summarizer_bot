@@ -61,10 +61,27 @@ class ChatBot(discord.bot.Bot):
                     enable_token_counting=True
                 )
 
-                raw_response = await self.llm_client.generate_as_chat_turns(messages, sys_prompt)
+                sent_msg = None
+                statuses = []
+
+                async def update_status(status):
+                    nonlocal sent_msg
+                    statuses.append(status)
+                    content = "\n".join(statuses)
+                    if sent_msg is None:
+                        sent_msg = await message.reply(content)
+                    else:
+                        await sent_msg.edit(content=content)
+
+                raw_response = await self.llm_client.generate_as_chat_turns_with_search(
+                    messages, sys_prompt, status_callback=update_status
+                )
 
                 response = parse_response(raw_response, message.guild)
-                await message.reply(response)
+                if sent_msg is None:
+                    await message.reply(response[:2000])
+                else:
+                    await sent_msg.edit(content=response[:2000])
 
                 elapsed_time = time.time() - start_time
                 # print(f"Bot response latency: {elapsed_time:.2f}s")

@@ -1,4 +1,6 @@
+anthropic
 openai
 py-cord
 loguru
 pytest
+aiofiles
