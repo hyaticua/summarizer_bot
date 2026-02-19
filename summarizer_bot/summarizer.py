@@ -1,10 +1,12 @@
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from message import Message
+from discord_tools import DISCORD_TOOLS, _status_for_tool
 from loguru import logger
 
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 5}
 MAX_CONTINUATIONS = 3
+MAX_TOOL_ROUNDS = 3
 
 default_sys_prompt = (
     "You are a helpful tool for summarizing segments of chats. "
@@ -86,8 +88,8 @@ class AnthropicClient:
 
         return response.content[0].text
 
-    async def generate_as_chat_turns_with_search(self, messages: list[Message], sys_prompt: str, status_callback=None) -> str:
-        """Generate a response using streaming with web search tool support.
+    async def generate_as_chat_turns_with_search(self, messages: list[Message], sys_prompt: str, status_callback=None, tool_executor=None) -> str:
+        """Generate a response using streaming with web search and Discord tool support.
 
         Uses streaming to detect web search events mid-response and calls
         status_callback to update the user. Falls back to generate_as_chat_turns
@@ -101,40 +103,66 @@ class AnthropicClient:
                 chat_turns.append({"role": "user", "content": msg.to_chat_turns()})
 
         try:
-            return await self._stream_with_search(chat_turns, sys_prompt, status_callback)
+            return await self._stream_with_search(chat_turns, sys_prompt, status_callback, tool_executor)
         except Exception as e:
-            logger.warning(f"Streaming web search failed, falling back to non-streaming: {e}")
+            logger.warning(f"Streaming failed, falling back to non-streaming: {e}")
             return await self.generate_as_chat_turns(messages, sys_prompt)
 
-    async def _stream_with_search(self, chat_turns: list[dict], sys_prompt: str, status_callback=None) -> str:
-        """Run a streaming request with web search, handling pause_turn continuations."""
+    async def _stream_with_search(self, chat_turns: list[dict], sys_prompt: str, status_callback=None, tool_executor=None) -> str:
+        """Run a streaming request with web search and tool use, handling continuations."""
         turns = list(chat_turns)
         text = ""
+        tool_rounds = 0
 
-        for _ in range(MAX_CONTINUATIONS + 1):
-            response = await self._stream_single_request(turns, sys_prompt, status_callback)
+        for _ in range(MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1):
+            response = await self._stream_single_request(turns, sys_prompt, status_callback, tool_executor)
             text = self._extract_text(response)
 
-            if response.stop_reason != "pause_turn":
+            if response.stop_reason == "pause_turn":
+                # Web search continuation
+                turns.append({"role": "assistant", "content": response.content})
+                turns.append({"role": "user", "content": "Continue."})
+            elif response.stop_reason == "tool_use" and tool_executor:
+                tool_rounds += 1
+                if tool_rounds > MAX_TOOL_ROUNDS:
+                    return text
+
+                # Extract tool_use blocks and execute them
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        if status_callback:
+                            await status_callback(_status_for_tool(block.name, block.input))
+                        result = await tool_executor.execute(block.name, block.input)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result,
+                        })
+
+                # Append assistant message with tool_use blocks, then user message with results
+                turns.append({"role": "assistant", "content": response.content})
+                turns.append({"role": "user", "content": tool_results})
+            else:
                 return text
 
-            # Continue the conversation: append assistant response, then empty user turn
-            turns.append({"role": "assistant", "content": response.content})
-            turns.append({"role": "user", "content": "Continue."})
-
-        # Hit max continuations — return what we have
+        # Hit max rounds — return what we have
         return text
 
-    async def _stream_single_request(self, turns, sys_prompt, status_callback):
+    async def _stream_single_request(self, turns, sys_prompt, status_callback, tool_executor=None):
         """Execute a single streaming request, calling status_callback on stream events."""
         thinking_notified = False
         search_notified = False
+
+        tools = [WEB_SEARCH_TOOL]
+        if tool_executor:
+            tools.extend(DISCORD_TOOLS)
 
         async with self.client.messages.stream(
             model=self.model,
             system=sys_prompt or default_sys_prompt,
             max_tokens=2048,
-            tools=[WEB_SEARCH_TOOL],
+            tools=tools,
             messages=turns,
         ) as stream:
             async for event in stream:

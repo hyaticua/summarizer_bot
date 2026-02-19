@@ -3,6 +3,7 @@ from config import Config
 from summarizer import AnthropicClient
 from utils import make_sys_prompt
 from message import parse_response, UserProfile, Message
+from discord_tools import DiscordToolExecutor
 from token_estimation import TokenCounter
 import time
 
@@ -71,8 +72,10 @@ class ChatBot(discord.bot.Bot):
                     else:
                         await sent_msg.edit(content=content)
 
+                tool_executor = DiscordToolExecutor(message.guild, self) if message.guild else None
+
                 raw_response = await self.llm_client.generate_as_chat_turns_with_search(
-                    messages, sys_prompt, status_callback=update_status
+                    messages, sys_prompt, status_callback=update_status, tool_executor=tool_executor
                 )
 
                 response = parse_response(raw_response, message.guild)
