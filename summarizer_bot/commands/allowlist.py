@@ -1,5 +1,6 @@
-import discord 
+import discord
 from discord.ext import commands
+from loguru import logger
 from bot import ChatBot
 
 
@@ -10,11 +11,13 @@ class ChatAllowlistMixin(commands.Cog):
     @commands.slash_command()
     async def chat_allowlist_add(self, ctx: discord.ApplicationContext, channel: discord.TextChannel):
         if ctx.author.name != self.bot.root_user:
+            logger.warning("Unauthorized /chat_allowlist_add attempt by {}", ctx.author.display_name)
             await ctx.send_response(
-                content="Sorry, you don't have permission to use this command!", 
+                content="Sorry, you don't have permission to use this command!",
                 ephemeral=True)
             return
-        
+
+        logger.info("/chat_allowlist_add #{} by {}", channel.name, ctx.author.display_name)
         await ctx.defer()
         
         server_config = self.bot.config.get_server_config(ctx.guild_id)
@@ -31,11 +34,13 @@ class ChatAllowlistMixin(commands.Cog):
     @commands.slash_command()
     async def chat_allowlist_remove(self, ctx: discord.ApplicationContext, channel: discord.TextChannel):
         if ctx.author.name != self.bot.root_user:
+            logger.warning("Unauthorized /chat_allowlist_remove attempt by {}", ctx.author.display_name)
             await ctx.send_response(
-                content="Sorry, you don't have permission to use this command!", 
+                content="Sorry, you don't have permission to use this command!",
                 ephemeral=True)
             return
-        
+
+        logger.info("/chat_allowlist_remove #{} by {}", channel.name, ctx.author.display_name)
         await ctx.defer()
         
         server_config = self.bot.config.get_server_config(ctx.guild_id)
@@ -54,11 +59,13 @@ class ChatAllowlistMixin(commands.Cog):
     @commands.slash_command()
     async def chat_allowlist_list(self, ctx: discord.ApplicationContext):
         if ctx.author.name != self.bot.root_user:
+            logger.warning("Unauthorized /chat_allowlist_list attempt by {}", ctx.author.display_name)
             await ctx.send_response(
-                content="Sorry, you don't have permission to use this command!", 
+                content="Sorry, you don't have permission to use this command!",
                 ephemeral=True)
             return
-        
+
+        logger.info("/chat_allowlist_list by {}", ctx.author.display_name)
         await ctx.defer()
         
         server_config = self.bot.config.get_server_config(ctx.guild_id)
@@ -80,11 +87,13 @@ class ChatAllowlistMixin(commands.Cog):
     @commands.slash_command()
     async def chat_allowlist_clear(self, ctx: discord.ApplicationContext):
         if ctx.author.name != self.bot.root_user:
+            logger.warning("Unauthorized /chat_allowlist_clear attempt by {}", ctx.author.display_name)
             await ctx.send_response(
-                content="Sorry, you don't have permission to use this command!", 
+                content="Sorry, you don't have permission to use this command!",
                 ephemeral=True)
             return
-        
+
+        logger.info("/chat_allowlist_clear by {}", ctx.author.display_name)
         await ctx.defer()
         
         server_config = self.bot.config.get_server_config(ctx.guild_id)

@@ -37,6 +37,7 @@ class AnthropicClient:
         self.model = model or "claude-sonnet-4-6"
 
     async def generate(self, prompt: str, sys_prompt: str = None) -> str:
+        logger.debug("generate() called (model={}, prompt_len={})", self.model, len(prompt))
         response = await self.client.messages.create(
             model=self.model,
             system=sys_prompt or default_sys_prompt,
@@ -50,12 +51,12 @@ class AnthropicClient:
                              "text": prompt,
                          }
                      ]
-                }                
+                }
             ]
         )
 
-        # print(response)
-
+        logger.debug("generate() response: {} tokens in, {} tokens out",
+                      response.usage.input_tokens, response.usage.output_tokens)
         return response.content[0].text
     
     async def generate_as_chat_turns(self, messages: list[Message], sys_prompt: str) -> str:
@@ -73,9 +74,7 @@ class AnthropicClient:
                 }
             chat_turns.append(obj)
 
-
-        # print(chat_turns)
-        # print("\n\n")
+        logger.debug("generate_as_chat_turns() called (model={}, turns={})", self.model, len(chat_turns))
 
         response = await self.client.messages.create(
             model=self.model,
@@ -84,8 +83,8 @@ class AnthropicClient:
             messages=chat_turns
         )
 
-        # print(response)
-
+        logger.debug("generate_as_chat_turns() response: {} tokens in, {} tokens out",
+                      response.usage.input_tokens, response.usage.output_tokens)
         return response.content[0].text
 
     async def generate_as_chat_turns_with_search(self, messages: list[Message], sys_prompt: str, status_callback=None, tool_executor=None) -> str:
@@ -102,10 +101,12 @@ class AnthropicClient:
             else:
                 chat_turns.append({"role": "user", "content": msg.to_chat_turns()})
 
+        logger.info("Streaming chat request (model={}, turns={}, tools={})",
+                     self.model, len(chat_turns), "yes" if tool_executor else "web-only")
         try:
             return await self._stream_with_search(chat_turns, sys_prompt, status_callback, tool_executor)
         except Exception as e:
-            logger.warning(f"Streaming failed, falling back to non-streaming: {e}")
+            logger.warning("Streaming failed, falling back to non-streaming: {}", e)
             return await self.generate_as_chat_turns(messages, sys_prompt)
 
     async def _stream_with_search(self, chat_turns: list[dict], sys_prompt: str, status_callback=None, tool_executor=None) -> str:
@@ -114,23 +115,30 @@ class AnthropicClient:
         text = ""
         tool_rounds = 0
 
-        for _ in range(MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1):
+        for iteration in range(MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1):
             response = await self._stream_single_request(turns, sys_prompt, status_callback, tool_executor)
             text = self._extract_text(response)
 
+            logger.debug("Stream iteration {}: stop_reason={}, tokens_in={}, tokens_out={}",
+                         iteration, response.stop_reason,
+                         response.usage.input_tokens, response.usage.output_tokens)
+
             if response.stop_reason == "pause_turn":
                 # Web search continuation
+                logger.info("Web search continuation (iteration {})", iteration)
                 turns.append({"role": "assistant", "content": response.content})
                 turns.append({"role": "user", "content": "Continue."})
             elif response.stop_reason == "tool_use" and tool_executor:
                 tool_rounds += 1
                 if tool_rounds > MAX_TOOL_ROUNDS:
+                    logger.warning("Max tool rounds ({}) reached, returning partial response", MAX_TOOL_ROUNDS)
                     return text
 
                 # Extract tool_use blocks and execute them
                 tool_results = []
                 for block in response.content:
                     if block.type == "tool_use":
+                        logger.info("Tool use: {} (round {})", block.name, tool_rounds)
                         if status_callback:
                             await status_callback(_status_for_tool(block.name, block.input))
                         result = await tool_executor.execute(block.name, block.input)
@@ -144,9 +152,11 @@ class AnthropicClient:
                 turns.append({"role": "assistant", "content": response.content})
                 turns.append({"role": "user", "content": tool_results})
             else:
+                logger.debug("Stream complete (stop_reason={})", response.stop_reason)
                 return text
 
         # Hit max rounds — return what we have
+        logger.warning("Hit max stream iterations ({}), returning partial response", MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1)
         return text
 
     async def _stream_single_request(self, turns, sys_prompt, status_callback, tool_executor=None):

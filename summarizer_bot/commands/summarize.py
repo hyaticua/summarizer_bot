@@ -1,5 +1,6 @@
-import discord 
+import discord
 from discord.ext import commands
+from loguru import logger
 from utils import concat_messages
 from bot import ChatBot
 
@@ -7,15 +8,17 @@ from bot import ChatBot
 class SummarizeMixin(commands.Cog):
     def __init__(self, bot: ChatBot):
         self.bot = bot
-        
+
     @commands.slash_command()
     async def summarize(self, ctx: discord.ApplicationContext, num_messages: int = 20, accent: str = None):
+        logger.info("/summarize by {} in #{} (num_messages={}, accent={})",
+                     ctx.author.display_name, ctx.channel.name, num_messages, accent)
         await ctx.defer()
 
         try:
             raw_messages = await self.bot.fetch_messages(ctx.channel_id, num_messages)
             messages, involved_users = await self.bot.process_messages(raw_messages)
-            user_profiles = self.bot.get_user_profiles(involved_users) 
+            user_profiles = self.bot.get_user_profiles(involved_users)
             msg_str, user_profs_str = concat_messages(messages, user_profiles)
 
             server_config = self.bot.config.get_server_config(ctx.guild_id)
@@ -27,15 +30,16 @@ class SummarizeMixin(commands.Cog):
 
             if not msg_str:
                 return "Sorry, there was nothing to summarize :)"
-            
+
             prompt = (f"Additional instructions: {profile}\n\n"
                     f"User profiles: \n{user_profs_str}\n\n"
                     f"Chat log: \n{msg_str}\n\n"
                     "Summary: ")
-            
+
             summary = await self.bot.llm_client.generate(prompt)
             await ctx.followup.send(summary)
+            logger.info("/summarize complete ({} chars)", len(summary))
         except discord.errors.Forbidden as e:
+            logger.warning("/summarize forbidden in #{}: {}", ctx.channel.name, e)
             await ctx.author.send("Sorry it looks like I don't have access!")
             await ctx.delete()
-            # ctx.followup.send("Sorry it looks like I don't have access!")

@@ -1,6 +1,7 @@
 import aiofiles
 import json
 from collections import defaultdict
+from loguru import logger
 
 class Config:
     def __init__(self, global_config: dict):
@@ -13,8 +14,9 @@ class Config:
         try:
             with open(path, "r") as f:
                 global_config.update(json.loads(f.read()))
+            logger.info("Loaded config from {}", path)
         except FileNotFoundError:
-            pass
+            logger.info("No config file found at {}, starting fresh", path)
 
         return Config(global_config)
 
@@ -26,6 +28,7 @@ class Config:
         self.global_config[category][str(id)] = configuration
         async with aiofiles.open("config.json", mode="w") as f:
             await f.write(json.dumps(self.global_config, indent=2))
+        logger.debug("Saved config: {}[{}]", category, id)
 
     def has_server_config(self, id: int) -> bool:
         return "servers" in self.global_config and id in self.global_config["servers"]

@@ -4,6 +4,7 @@ import re
 import base64
 import json
 from discord.ext.commands import MemberConverter
+from loguru import logger
 
 def attempt_to_find_member(name: str, guild: discord.Guild):
     """
@@ -69,11 +70,13 @@ def parse_response(response: str, guild: discord.Guild):
     def replace_match(match):
         display_name = match.group(1)
         member = attempt_to_find_member(display_name, guild)
-        if not member: 
+        if not member:
+            logger.debug("Could not resolve mention '{}' to a guild member", display_name)
             return f"<@{display_name}>"
 
+        logger.debug("Resolved mention '{}' -> {} (id={})", display_name, member.display_name, member.id)
         return f"<@{member.id}>"
-        
+
     return re.sub(pattern, replace_match, response)
 
 

@@ -1,4 +1,5 @@
 import discord
+from loguru import logger
 from config import Config
 from summarizer import AnthropicClient
 from utils import make_sys_prompt
@@ -33,9 +34,9 @@ class ChatBot(discord.bot.Bot):
     
     # overload
     async def on_ready(self):
-        print(f"We have logged in as {self.user}")
+        logger.info("Logged in as {}", self.user)
         for guild in self.guilds:
-            print(f"{guild.id=} {guild.name=}")
+            logger.info("Connected to guild: {} (id={})", guild.name, guild.id)
 
     # overload
     async def on_message(self, message: discord.Message):
@@ -48,6 +49,14 @@ class ChatBot(discord.bot.Bot):
                 return
 
             if isinstance(message.channel, discord.channel.DMChannel) or (self.user and self.user.mentioned_in(message)):
+                is_dm = isinstance(message.channel, discord.channel.DMChannel)
+                logger.info(
+                    "Chat triggered by {} in {} ({})",
+                    message.author.display_name,
+                    f"DM" if is_dm else f"#{message.channel.name}",
+                    message.guild.name if message.guild else "DM",
+                )
+
                 start_time = time.time()
 
                 sys_prompt = make_sys_prompt(message.guild, self.persona)
@@ -59,6 +68,7 @@ class ChatBot(discord.bot.Bot):
                     max_messages=50,
                     enable_token_counting=True
                 )
+                logger.debug("Built context with {} messages", len(messages))
 
                 sent_msg = None
                 statuses = []
@@ -85,10 +95,13 @@ class ChatBot(discord.bot.Bot):
                     await sent_msg.edit(content=response[:2000])
 
                 elapsed_time = time.time() - start_time
-                # print(f"Bot response latency: {elapsed_time:.2f}s")
+                logger.info("Response sent in {:.2f}s ({} chars)", elapsed_time, len(response))
 
         except discord.errors.Forbidden as e:
+            logger.warning("Forbidden error in channel {}: {}", message.channel, e)
             await message.author.send("Sorry it looks like I don't have access!")
+        except Exception as e:
+            logger.exception("Unhandled error processing message from {}", message.author.display_name)
 
     async def build_context_with_token_limit(
         self,
@@ -149,11 +162,10 @@ class ChatBot(discord.bot.Bot):
             else:
                 # Adding this message would exceed limits, stop here
                 # We keep what we have (the newest messages)
-                print(f"Token limit reached: {token_count} > {max_tokens}")
+                logger.debug("Token limit reached: {} > {} (keeping {} messages)", token_count, max_tokens, len(messages_to_include))
                 break
 
-
-        # print(f"Final token count for context: {final_count}/{max_tokens}")
+        logger.debug("Final context: {} messages, ~{} tokens / {} max", len(messages_to_include), final_count, max_tokens)
         return messages_to_include
 
     def get_user_profiles(self, involved_users: set[discord.Member]) -> list[UserProfile]:
