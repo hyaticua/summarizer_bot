@@ -1,3 +1,5 @@
+import json
+
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from message import Message
@@ -5,6 +7,7 @@ from discord_tools import DISCORD_TOOLS, _status_for_tool
 from loguru import logger
 
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 5}
+WEB_FETCH_TOOL = {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 3}
 MAX_CONTINUATIONS = 3
 MAX_TOOL_ROUNDS = 3
 
@@ -124,8 +127,8 @@ class AnthropicClient:
                          response.usage.input_tokens, response.usage.output_tokens)
 
             if response.stop_reason == "pause_turn":
-                # Web search continuation
-                logger.info("Web search continuation (iteration {})", iteration)
+                # Server-side tool continuation (web search or web fetch)
+                logger.info("Server tool continuation (iteration {})", iteration)
                 turns.append({"role": "assistant", "content": response.content})
                 turns.append({"role": "user", "content": "Continue."})
             elif response.stop_reason == "tool_use" and tool_executor:
@@ -163,8 +166,10 @@ class AnthropicClient:
         """Execute a single streaming request, calling status_callback on stream events."""
         thinking_notified = False
         search_notified = False
+        fetch_pending = False  # True while we're waiting for the fetch URL
+        fetch_input_json = ""  # Accumulates partial JSON for the fetch input
 
-        tools = [WEB_SEARCH_TOOL]
+        tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
         if tool_executor:
             tools.extend(DISCORD_TOOLS)
 
@@ -176,15 +181,37 @@ class AnthropicClient:
             messages=turns,
         ) as stream:
             async for event in stream:
-                if not status_callback or event.type != "content_block_start":
+                if not status_callback:
                     continue
-                block_type = getattr(event.content_block, "type", None)
-                if not thinking_notified and block_type == "thinking":
-                    thinking_notified = True
-                    await status_callback("Thinking...")
-                elif not search_notified and block_type == "server_tool_use":
-                    search_notified = True
-                    await status_callback("Searching the web...")
+                if event.type == "content_block_start":
+                    block = event.content_block
+                    block_type = getattr(block, "type", None)
+                    if not thinking_notified and block_type == "thinking":
+                        thinking_notified = True
+                        await status_callback("Thinking...")
+                    elif block_type == "server_tool_use":
+                        tool_name = getattr(block, "name", None)
+                        if not search_notified and tool_name == "web_search":
+                            search_notified = True
+                            await status_callback("Searching the web...")
+                        elif tool_name == "web_fetch":
+                            fetch_pending = True
+                            fetch_input_json = ""
+                elif event.type == "content_block_delta" and fetch_pending:
+                    delta = event.delta
+                    if getattr(delta, "type", None) == "input_json_delta":
+                        fetch_input_json += delta.partial_json
+                elif event.type == "content_block_stop" and fetch_pending:
+                    fetch_pending = False
+                    # Extract URL from accumulated JSON
+                    try:
+                        url = json.loads(fetch_input_json).get("url", "")
+                    except (json.JSONDecodeError, AttributeError):
+                        url = ""
+                    if url:
+                        await status_callback(f"Fetching {url}...")
+                    else:
+                        await status_callback("Fetching a web page...")
 
             return await stream.get_final_message()
 

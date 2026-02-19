@@ -12,7 +12,7 @@ Tests edge cases including:
 import pytest
 from unittest.mock import Mock, MagicMock
 import discord
-from summarizer_bot.message import attempt_to_find_member, parse_response, parse_content
+from summarizer_bot.message import attempt_to_find_member, parse_response, parse_content, format_message_text
 
 
 class MockMember:
@@ -292,6 +292,7 @@ class TestParseContent:
         message.content = "Hello <@12345>!"
         message.guild = Mock(spec=discord.Guild)
         message.guild.get_member = Mock(return_value=author)
+        message.guild.get_channel = Mock(return_value=None)
 
         result = parse_content(message)
         # The function returns <@MockMember> format, which will call __str__
@@ -315,9 +316,153 @@ class TestParseContent:
             return None
 
         message.guild.get_member = get_member
+        message.guild.get_channel = Mock(return_value=None)
 
         result = parse_content(message)
         assert "<@" in result
+
+    def test_channel_mention_resolved(self):
+        """Test converting <#123456> to #channel-name."""
+        channel = Mock()
+        channel.name = "general"
+
+        message = Mock(spec=discord.Message)
+        message.content = "Check out <#123456>!"
+        message.guild = Mock(spec=discord.Guild)
+        message.guild.get_member = Mock(return_value=None)
+        message.guild.get_channel = Mock(return_value=channel)
+
+        result = parse_content(message)
+        assert "#general" in result
+        assert "<#123456>" not in result
+
+    def test_channel_mention_unknown_id(self):
+        """Test that unresolvable channel IDs are left as-is."""
+        message = Mock(spec=discord.Message)
+        message.content = "See <#999999>"
+        message.guild = Mock(spec=discord.Guild)
+        message.guild.get_member = Mock(return_value=None)
+        message.guild.get_channel = Mock(return_value=None)
+
+        result = parse_content(message)
+        assert "<#999999>" in result
+
+    def test_mixed_user_and_channel_mentions(self):
+        """Test both user and channel mentions in the same message."""
+        member = MockMember(id=111, name="alice", global_name="Alice")
+        channel = Mock()
+        channel.name = "dev"
+
+        message = Mock(spec=discord.Message)
+        message.content = "Hey <@111>, check <#555>!"
+        message.guild = Mock(spec=discord.Guild)
+        message.guild.get_member = Mock(return_value=member)
+        message.guild.get_channel = Mock(return_value=channel)
+
+        result = parse_content(message)
+        assert "#dev" in result
+        assert "<#555>" not in result
+        assert "<@" in result  # user mention converted
+
+
+class TestFormatMessageText:
+    """Test the format_message_text shared formatting function."""
+
+    def _make_msg(self, content, author_name="Alice", reference=None, attachments=None):
+        msg = Mock(spec=discord.Message)
+        msg.content = content
+        msg.author = Mock()
+        msg.author.display_name = author_name
+        msg.reference = reference
+        msg.attachments = attachments or []
+        msg.guild = Mock(spec=discord.Guild)
+        msg.guild.get_member = Mock(return_value=None)
+        msg.guild.get_channel = Mock(return_value=None)
+        return msg
+
+    def test_basic_content(self):
+        msg = self._make_msg("hello world")
+        assert format_message_text(msg) == "hello world"
+
+    def test_empty_content(self):
+        msg = self._make_msg(None)
+        assert format_message_text(msg) == "[no text]"
+
+    def test_truncation(self):
+        msg = self._make_msg("a" * 300)
+        result = format_message_text(msg, max_length=200)
+        assert len(result) <= 204  # 200 + "..."
+        assert result.endswith("...")
+
+    def test_no_truncation_when_under_limit(self):
+        msg = self._make_msg("short")
+        result = format_message_text(msg, max_length=200)
+        assert result == "short"
+
+    def test_reply_context(self):
+        ref = Mock()
+        ref.resolved = Mock(spec=discord.Message)
+        ref.resolved.author = Mock()
+        ref.resolved.author.display_name = "Bob"
+        msg = self._make_msg("I agree", reference=ref)
+        result = format_message_text(msg)
+        assert result == "[replying to Bob] I agree"
+
+    def test_reply_to_deleted_message(self):
+        ref = Mock()
+        ref.resolved = Mock()  # not spec=discord.Message, so isinstance fails
+        msg = self._make_msg("what happened?", reference=ref)
+        result = format_message_text(msg)
+        assert result == "[replying to deleted message] what happened?"
+
+    def test_no_reply_when_reference_is_none(self):
+        msg = self._make_msg("hello")
+        result = format_message_text(msg)
+        assert "replying" not in result
+
+    def test_no_reply_when_resolved_is_none(self):
+        ref = Mock()
+        ref.resolved = None
+        msg = self._make_msg("hello", reference=ref)
+        result = format_message_text(msg)
+        assert "replying" not in result
+
+    def test_attachment_names(self):
+        att1 = Mock(spec=discord.Attachment)
+        att1.filename = "photo.jpg"
+        att2 = Mock(spec=discord.Attachment)
+        att2.filename = "doc.pdf"
+        msg = self._make_msg("check these", attachments=[att1, att2])
+        result = format_message_text(msg, include_attachment_names=True)
+        assert "[attachments: photo.jpg, doc.pdf]" in result
+
+    def test_attachment_names_not_shown_by_default(self):
+        att = Mock(spec=discord.Attachment)
+        att.filename = "photo.jpg"
+        msg = self._make_msg("check this", attachments=[att])
+        result = format_message_text(msg)
+        assert "attachments" not in result
+
+    def test_mention_resolution(self):
+        member = MockMember(id=123, name="bob", global_name="Bob")
+        msg = self._make_msg("Hey <@123> look")
+        msg.guild.get_member = Mock(return_value=member)
+        result = format_message_text(msg)
+        assert "<@Bob>" in result
+        assert "<@123>" not in result
+
+    def test_combined_reply_and_attachments(self):
+        ref = Mock()
+        ref.resolved = Mock(spec=discord.Message)
+        ref.resolved.author = Mock()
+        ref.resolved.author.display_name = "Bob"
+        att = Mock(spec=discord.Attachment)
+        att.filename = "screenshot.png"
+        msg = self._make_msg("here's the fix", reference=ref, attachments=[att])
+        result = format_message_text(msg, include_attachment_names=True)
+        assert result.startswith("[replying to Bob]")
+        assert "here's the fix" in result
+        assert "screenshot.png" in result
 
 
 class TestRoundTripConversion:

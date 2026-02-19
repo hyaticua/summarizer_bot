@@ -52,16 +52,65 @@ def attempt_to_find_member(name: str, guild: discord.Guild):
     return None
 
 def parse_content(message: discord.Message):
-    pattern = r"<@!?(\d+)>"
+    content = message.content
 
-    def replace_match(match):
+    # Resolve user mentions: <@123> or <@!123> -> <@DisplayName>
+    user_pattern = r"<@!?(\d+)>"
+
+    def replace_user(match):
         user_id = int(match.group(1))
         member = message.guild.get_member(user_id)
         if not member:
             return match.group(0)
         return f"<@{member.display_name}>"
 
-    return re.sub(pattern, replace_match, message.content)
+    content = re.sub(user_pattern, replace_user, content)
+
+    # Resolve channel mentions: <#123> -> #channel-name
+    channel_pattern = r"<#(\d+)>"
+
+    def replace_channel(match):
+        channel_id = int(match.group(1))
+        channel = message.guild.get_channel(channel_id)
+        if not channel:
+            return match.group(0)
+        return f"#{channel.name}"
+
+    content = re.sub(channel_pattern, replace_channel, content)
+
+    return content
+
+
+def format_message_text(
+    msg: discord.Message,
+    max_length: int = 0,
+    include_attachment_names: bool = False,
+) -> str:
+    """Shared formatting for a Discord message's text content.
+
+    Handles mention resolution, reply context, optional truncation,
+    and optional attachment filename listing.  Used by both the chat
+    context (Message class) and the Discord tool output.
+    """
+    content = parse_content(msg) if msg.content else "[no text]"
+
+    if max_length and len(content) > max_length:
+        content = content[:max_length] + "..."
+
+    # Reply context
+    if msg.reference and msg.reference.resolved:
+        ref = msg.reference.resolved
+        if isinstance(ref, discord.Message):
+            content = f"[replying to {ref.author.display_name}] {content}"
+        else:
+            # DeletedReferencedMessage
+            content = f"[replying to deleted message] {content}"
+
+    if include_attachment_names and msg.attachments:
+        filenames = ", ".join(a.filename for a in msg.attachments)
+        content += f" [attachments: {filenames}]"
+
+    return content
 
 
 def parse_response(response: str, guild: discord.Guild):
@@ -113,7 +162,7 @@ class Message:
             self.author = msg.guild.get_member(self.author.id)
 
         self.author = msg.author.display_name
-        self.text = parse_content(msg)
+        self.text = format_message_text(msg)
         self.id = msg.id
         self.created_at = msg.created_at
         self.images: list[Image] = []

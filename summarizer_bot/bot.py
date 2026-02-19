@@ -59,7 +59,7 @@ class ChatBot(discord.bot.Bot):
 
                 start_time = time.time()
 
-                sys_prompt = make_sys_prompt(message.guild, self.persona)
+                sys_prompt = make_sys_prompt(message.guild, self.persona, channel=message.channel)
 
                 # Build context with token awareness
                 messages = await self.build_context_with_token_limit(

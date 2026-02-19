@@ -20,12 +20,20 @@ def build_json(messages: list[Message], user_profiles: list[UserProfile]) -> tup
     )
 
 
-def make_sys_prompt(guild: discord.Guild, persona: str) -> str:
+def make_sys_prompt(guild: discord.Guild, persona: str, channel: discord.abc.Messageable = None) -> str:
     current_time = time.strftime("%H:%M")
     current_date = time.strftime("%Y-%m-%d")
 
     prompt = persona.replace("{{BOT_NAME}}", guild.me.display_name)
     prompt += f"\n\n# Current Context\n\nCurrent date: {current_date}\nCurrent time: {current_time}\n"
+
+    if channel:
+        if isinstance(channel, discord.Thread):
+            parent_name = channel.parent.name if channel.parent else "unknown"
+            prompt += f"Source channel: thread #{channel.name} in #{parent_name}\n"
+        elif hasattr(channel, "name"):
+            prompt += f"Source channel: #{channel.name}\n"
+
     return prompt
 
 

@@ -1,5 +1,17 @@
+import re
+from datetime import datetime, timedelta, timezone
+
 import discord
+from dateutil import parser as dateutil_parser
 from loguru import logger
+
+try:
+    from message import attempt_to_find_member, format_message_text
+except ImportError:
+    from .message import attempt_to_find_member, format_message_text
+
+SCAN_LIMIT = 500   # Max messages to scan from Discord when filtering
+BATCH_SIZE = 100    # Messages per Discord API call (Discord's max)
 
 DISCORD_TOOLS = [
     {
@@ -37,7 +49,7 @@ DISCORD_TOOLS = [
     },
     {
         "name": "read_channel_history",
-        "description": "Read recent messages from a channel or thread in the server.",
+        "description": "Read recent messages from a channel or thread. Supports optional filters to search for specific messages. All filters combine with AND logic. When filters are active, up to 500 messages are scanned to find matches.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -47,13 +59,85 @@ DISCORD_TOOLS = [
                 },
                 "num_messages": {
                     "type": "integer",
-                    "description": "Number of recent messages to fetch (default 25, max 50)."
+                    "description": "Number of matching messages to return (default 25, max 50)."
+                },
+                "author": {
+                    "type": "string",
+                    "description": "Filter to messages from a specific user. Fuzzy-matched by display name, nickname, or username."
+                },
+                "contains": {
+                    "type": "string",
+                    "description": "Filter to messages containing this keyword or phrase (case-insensitive)."
+                },
+                "before": {
+                    "type": "string",
+                    "description": "Only messages before this time. Accepts relative ('yesterday', '2 hours ago', 'last week') or absolute ('2024-01-15') expressions."
+                },
+                "after": {
+                    "type": "string",
+                    "description": "Only messages after this time. Accepts relative ('yesterday', '2 hours ago', 'last week') or absolute ('2024-01-15') expressions."
+                },
+                "has_attachments": {
+                    "type": "boolean",
+                    "description": "If true, only include messages that have file attachments."
+                },
+                "exclude_bots": {
+                    "type": "boolean",
+                    "description": "If true, exclude messages from bot accounts."
                 }
             },
             "required": ["channel_name"]
         }
     }
 ]
+
+
+def _parse_time_expression(expr: str) -> datetime | None:
+    """Parse a human-readable time expression into a UTC datetime.
+
+    Supports:
+    - Relative: "yesterday", "today", "last week", "last month", "N units ago"
+    - Absolute: anything dateutil can parse (e.g. "2024-01-15", "Jan 15 2024")
+
+    Returns None if the expression cannot be parsed.
+    """
+    expr = expr.strip().lower()
+    now = datetime.now(timezone.utc)
+
+    # Hardcoded relative expressions
+    if expr == "yesterday":
+        return now - timedelta(days=1)
+    if expr == "today":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if expr == "last week":
+        return now - timedelta(weeks=1)
+    if expr == "last month":
+        return now - timedelta(days=30)
+
+    # "N units ago" pattern
+    match = re.match(r"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago", expr)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2)
+        unit_map = {
+            "second": timedelta(seconds=1),
+            "minute": timedelta(minutes=1),
+            "hour": timedelta(hours=1),
+            "day": timedelta(days=1),
+            "week": timedelta(weeks=1),
+            "month": timedelta(days=30),
+            "year": timedelta(days=365),
+        }
+        return now - unit_map[unit] * amount
+
+    # Absolute date/time via dateutil
+    try:
+        parsed = dateutil_parser.parse(expr)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except (ValueError, OverflowError):
+        return None
 
 
 def _status_for_tool(name: str, tool_input: dict) -> str:
@@ -70,8 +154,32 @@ def _status_for_tool(name: str, tool_input: dict) -> str:
         return "Listing server channels..."
     elif name == "read_channel_history":
         channel = tool_input.get("channel_name", "unknown")
-        return f"Reading history from #{channel}..."
+        filters = _describe_active_filters(tool_input)
+        if filters:
+            return f"Searching #{channel} for {filters}..."
+        return f"Reading messages from #{channel}..."
     return "Using a tool..."
+
+
+def _describe_active_filters(tool_input: dict) -> str:
+    """Build a short human-readable description of active filters."""
+    parts = []
+    if tool_input.get("author"):
+        parts.append(f"messages from {tool_input['author']}")
+    if tool_input.get("contains"):
+        parts.append(f"containing '{tool_input['contains']}'")
+    if tool_input.get("after") or tool_input.get("before"):
+        time_parts = []
+        if tool_input.get("after"):
+            time_parts.append(f"after {tool_input['after']}")
+        if tool_input.get("before"):
+            time_parts.append(f"before {tool_input['before']}")
+        parts.append(" ".join(time_parts))
+    if tool_input.get("has_attachments"):
+        parts.append("with attachments")
+    if tool_input.get("exclude_bots"):
+        parts.append("excluding bots")
+    return ", ".join(parts)
 
 
 class DiscordToolExecutor:
@@ -216,6 +324,77 @@ class DiscordToolExecutor:
         if not perms.read_message_history:
             return f"I don't have permission to read message history in #{channel.name}."
 
+        has_filters = self._has_filters(tool_input)
+
+        if not has_filters:
+            # Fast path: no filters, single fetch
+            return await self._read_unfiltered(channel, num_messages)
+
+        # Filtered path: validate inputs, then batch-fetch with filtering
+        # Resolve author
+        author_member = None
+        if tool_input.get("author"):
+            author_member = attempt_to_find_member(tool_input["author"], self.guild)
+            if author_member is None:
+                return f"Could not find a member matching '{tool_input['author']}' in this server."
+
+        # Parse time filters
+        before_dt = None
+        after_dt = None
+        if tool_input.get("before"):
+            before_dt = _parse_time_expression(tool_input["before"])
+            if before_dt is None:
+                return f"Could not parse time expression: '{tool_input['before']}'. Try 'yesterday', '2 hours ago', or '2024-01-15'."
+        if tool_input.get("after"):
+            after_dt = _parse_time_expression(tool_input["after"])
+            if after_dt is None:
+                return f"Could not parse time expression: '{tool_input['after']}'. Try 'yesterday', '2 hours ago', or '2024-01-15'."
+        if before_dt and after_dt and after_dt >= before_dt:
+            return "Error: 'after' must be earlier than 'before'."
+
+        # Batch-fetch with filtering
+        matches = []
+        scanned = 0
+        cursor_before = before_dt  # Pass to Discord API for server-side filtering
+
+        try:
+            while scanned < SCAN_LIMIT and len(matches) < num_messages:
+                fetch_limit = min(BATCH_SIZE, SCAN_LIMIT - scanned)
+                kwargs = {"limit": fetch_limit}
+                if cursor_before:
+                    kwargs["before"] = cursor_before
+                if after_dt:
+                    kwargs["after"] = after_dt
+
+                batch = await channel.history(**kwargs).flatten()
+                if not batch:
+                    break
+
+                scanned += len(batch)
+
+                for msg in batch:
+                    if self._matches_filters(msg, author_member, tool_input):
+                        matches.append(msg)
+                        if len(matches) >= num_messages:
+                            break
+
+                # Cursor-based pagination: move cursor to oldest message in batch
+                oldest = batch[-1]
+                cursor_before = oldest.created_at
+
+                if len(batch) < fetch_limit:
+                    break  # No more messages available
+
+        except discord.Forbidden:
+            return f"I don't have permission to read #{channel.name}."
+
+        if not matches:
+            return self._no_results_message(channel.name, tool_input, scanned)
+
+        return self._format_history_output(channel.name, matches, tool_input, scanned)
+
+    async def _read_unfiltered(self, channel, num_messages: int) -> str:
+        """Fast path: fetch recent messages with no filtering."""
         try:
             messages = await channel.history(limit=num_messages).flatten()
         except discord.Forbidden:
@@ -230,9 +409,7 @@ class DiscordToolExecutor:
         total_chars = 0
         max_total = 4000
         for msg in messages:
-            content = msg.content or "[no text]"
-            if len(content) > 200:
-                content = content[:200] + "..."
+            content = format_message_text(msg, max_length=200, include_attachment_names=True)
             timestamp = msg.created_at.strftime("%H:%M")
             line = f"[{timestamp}] {msg.author.display_name}: {content}"
             total_chars += len(line)
@@ -242,6 +419,70 @@ class DiscordToolExecutor:
             lines.append(line)
 
         return f"Recent messages in #{channel.name}:\n" + "\n".join(lines)
+
+    def _has_filters(self, tool_input: dict) -> bool:
+        """Check if any filter parameters are present."""
+        filter_keys = ("author", "contains", "before", "after", "has_attachments", "exclude_bots")
+        return any(tool_input.get(k) for k in filter_keys)
+
+    def _matches_filters(self, msg, author_member, tool_input: dict) -> bool:
+        """Check if a message matches all active filters (AND logic)."""
+        if author_member and msg.author.id != author_member.id:
+            return False
+        if tool_input.get("contains"):
+            if tool_input["contains"].lower() not in (msg.content or "").lower():
+                return False
+        if tool_input.get("has_attachments") and not msg.attachments:
+            return False
+        if tool_input.get("exclude_bots") and msg.author.bot:
+            return False
+        return True
+
+    def _format_history_output(self, channel_name: str, messages: list, tool_input: dict, scanned: int) -> str:
+        """Format matched messages for output."""
+        messages = list(reversed(messages))  # chronological order
+
+        # Decide timestamp format: include date if time span > 24h or time filters used
+        use_date = bool(tool_input.get("before") or tool_input.get("after"))
+        if len(messages) >= 2:
+            span = abs((messages[-1].created_at - messages[0].created_at).total_seconds())
+            if span > 86400:
+                use_date = True
+
+        lines = []
+        total_chars = 0
+        max_total = 4000
+        for msg in messages:
+            content = format_message_text(msg, max_length=200, include_attachment_names=True)
+
+            if use_date:
+                timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M")
+            else:
+                timestamp = msg.created_at.strftime("%H:%M")
+
+            line = f"[{timestamp}] {msg.author.display_name}: {content}"
+            total_chars += len(line)
+            if total_chars > max_total:
+                lines.append("... (truncated)")
+                break
+            lines.append(line)
+
+        filters = _describe_active_filters(tool_input)
+        header = f"Messages in #{channel_name}"
+        if filters:
+            header += f" ({filters})"
+        header += f" — {len(messages)} match{'es' if len(messages) != 1 else ''}, {scanned} scanned:"
+
+        return header + "\n" + "\n".join(lines)
+
+    def _no_results_message(self, channel_name: str, tool_input: dict, scanned: int) -> str:
+        """Informative message when no messages match the filters."""
+        filters = _describe_active_filters(tool_input)
+        msg = f"No messages found in #{channel_name}"
+        if filters:
+            msg += f" matching: {filters}"
+        msg += f" (scanned {scanned} messages)."
+        return msg
 
     @staticmethod
     def _normalize_name(s: str) -> str:

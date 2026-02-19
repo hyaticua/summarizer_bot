@@ -6,16 +6,21 @@ Tests cover:
 - _fuzzy_find_channel(): channel name resolution
 - _format_channel(): channel display formatting
 - DiscordToolExecutor: get_server_members, list_channels, read_channel_history, dispatch
+- _parse_time_expression(): time expression parsing
+- _matches_filters(): message filter logic
+- Filtered read_channel_history integration
 """
 
 import pytest
-from unittest.mock import Mock, AsyncMock, MagicMock
-from datetime import datetime
+from unittest.mock import Mock, AsyncMock, MagicMock, patch
+from datetime import datetime, timedelta, timezone
 
 import discord
 
 from summarizer_bot.discord_tools import (
     _status_for_tool,
+    _parse_time_expression,
+    _describe_active_filters,
     DiscordToolExecutor,
 )
 
@@ -110,12 +115,24 @@ def make_guild(members, channels, categories=None, threads=None):
     return g
 
 
-def make_message(author, content, timestamp=None):
+def make_attachment(filename="file.png"):
+    """Create a mock discord.Attachment."""
+    att = Mock(spec=discord.Attachment)
+    att.filename = filename
+    return att
+
+
+def make_message(author, content, timestamp=None, attachments=None, reference=None):
     """Create a mock discord.Message."""
     msg = Mock(spec=discord.Message)
     msg.author = author
     msg.content = content
     msg.created_at = timestamp or datetime(2025, 1, 1, 12, 0)
+    msg.attachments = attachments or []
+    msg.reference = reference
+    msg.guild = Mock(spec=discord.Guild)
+    msg.guild.get_member = Mock(return_value=None)
+    msg.guild.get_channel = Mock(return_value=None)
     return msg
 
 
@@ -150,7 +167,7 @@ class TestStatusForTool:
 
     def test_read_channel_history(self):
         result = _status_for_tool("read_channel_history", {"channel_name": "dev"})
-        assert result == "Reading history from #dev..."
+        assert result == "Reading messages from #dev..."
 
     def test_unknown_tool(self):
         assert _status_for_tool("something_else", {}) == "Using a tool..."
@@ -483,6 +500,483 @@ class TestExecuteDispatch:
         result = await ex.execute("get_server_members", {"filter": "all"})
         assert "Error" in result
         assert "boom" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: _parse_time_expression
+# ---------------------------------------------------------------------------
+
+
+class TestParseTimeExpression:
+    def test_yesterday(self):
+        result = _parse_time_expression("yesterday")
+        assert result is not None
+        now = datetime.now(timezone.utc)
+        expected = now - timedelta(days=1)
+        assert abs((result - expected).total_seconds()) < 2
+
+    def test_today(self):
+        result = _parse_time_expression("today")
+        assert result is not None
+        now = datetime.now(timezone.utc)
+        assert result.hour == 0 and result.minute == 0
+        assert result.date() == now.date()
+
+    def test_last_week(self):
+        result = _parse_time_expression("last week")
+        assert result is not None
+        now = datetime.now(timezone.utc)
+        expected = now - timedelta(weeks=1)
+        assert abs((result - expected).total_seconds()) < 2
+
+    def test_last_month(self):
+        result = _parse_time_expression("last month")
+        assert result is not None
+        now = datetime.now(timezone.utc)
+        expected = now - timedelta(days=30)
+        assert abs((result - expected).total_seconds()) < 2
+
+    def test_n_hours_ago(self):
+        result = _parse_time_expression("2 hours ago")
+        assert result is not None
+        now = datetime.now(timezone.utc)
+        expected = now - timedelta(hours=2)
+        assert abs((result - expected).total_seconds()) < 2
+
+    def test_n_days_ago(self):
+        result = _parse_time_expression("3 days ago")
+        assert result is not None
+        now = datetime.now(timezone.utc)
+        expected = now - timedelta(days=3)
+        assert abs((result - expected).total_seconds()) < 2
+
+    def test_n_minutes_ago(self):
+        result = _parse_time_expression("30 minutes ago")
+        assert result is not None
+        now = datetime.now(timezone.utc)
+        expected = now - timedelta(minutes=30)
+        assert abs((result - expected).total_seconds()) < 2
+
+    def test_singular_unit(self):
+        result = _parse_time_expression("1 hour ago")
+        assert result is not None
+        now = datetime.now(timezone.utc)
+        expected = now - timedelta(hours=1)
+        assert abs((result - expected).total_seconds()) < 2
+
+    def test_absolute_date(self):
+        result = _parse_time_expression("2024-01-15")
+        assert result is not None
+        assert result.year == 2024
+        assert result.month == 1
+        assert result.day == 15
+        assert result.tzinfo is not None
+
+    def test_absolute_date_with_time(self):
+        result = _parse_time_expression("2024-06-15 14:30")
+        assert result is not None
+        assert result.year == 2024
+        assert result.hour == 14
+        assert result.minute == 30
+
+    def test_invalid_returns_none(self):
+        assert _parse_time_expression("not a time") is None
+        assert _parse_time_expression("") is None
+        assert _parse_time_expression("xyz ago") is None
+
+    def test_whitespace_stripped(self):
+        result = _parse_time_expression("  yesterday  ")
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Tests: _describe_active_filters
+# ---------------------------------------------------------------------------
+
+
+class TestDescribeActiveFilters:
+    def test_no_filters(self):
+        assert _describe_active_filters({}) == ""
+
+    def test_author_only(self):
+        result = _describe_active_filters({"author": "Alice"})
+        assert "Alice" in result
+
+    def test_contains_only(self):
+        result = _describe_active_filters({"contains": "bug"})
+        assert "bug" in result
+
+    def test_time_filters(self):
+        result = _describe_active_filters({"after": "yesterday", "before": "today"})
+        assert "after yesterday" in result
+        assert "before today" in result
+
+    def test_combined(self):
+        result = _describe_active_filters({
+            "author": "Alice",
+            "contains": "bug",
+            "has_attachments": True,
+        })
+        assert "Alice" in result
+        assert "bug" in result
+        assert "attachments" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: _matches_filters
+# ---------------------------------------------------------------------------
+
+
+class TestMatchesFilters:
+    def _make_executor(self):
+        guild = make_guild([], [])
+        return _executor(guild)
+
+    def test_no_filters_matches_all(self):
+        ex = self._make_executor()
+        alice = make_member(1, "Alice")
+        msg = make_message(alice, "hello")
+        assert ex._matches_filters(msg, None, {}) is True
+
+    def test_author_filter_match(self):
+        ex = self._make_executor()
+        alice = make_member(1, "Alice")
+        bob = make_member(2, "Bob")
+        msg = make_message(alice, "hello")
+        assert ex._matches_filters(msg, alice, {"author": "Alice"}) is True
+        assert ex._matches_filters(msg, bob, {"author": "Bob"}) is False
+
+    def test_contains_filter(self):
+        ex = self._make_executor()
+        alice = make_member(1, "Alice")
+        msg = make_message(alice, "This is a bug report")
+        assert ex._matches_filters(msg, None, {"contains": "bug"}) is True
+        assert ex._matches_filters(msg, None, {"contains": "BUG"}) is True  # case-insensitive
+        assert ex._matches_filters(msg, None, {"contains": "feature"}) is False
+
+    def test_contains_filter_no_content(self):
+        ex = self._make_executor()
+        alice = make_member(1, "Alice")
+        msg = make_message(alice, None)
+        assert ex._matches_filters(msg, None, {"contains": "bug"}) is False
+
+    def test_has_attachments_filter(self):
+        ex = self._make_executor()
+        alice = make_member(1, "Alice")
+        msg_with = make_message(alice, "check this", attachments=[make_attachment()])
+        msg_without = make_message(alice, "no file")
+        assert ex._matches_filters(msg_with, None, {"has_attachments": True}) is True
+        assert ex._matches_filters(msg_without, None, {"has_attachments": True}) is False
+
+    def test_exclude_bots_filter(self):
+        ex = self._make_executor()
+        human = make_member(1, "Alice", bot=False)
+        bot = make_member(2, "BotUser", bot=True)
+        msg_human = make_message(human, "hello")
+        msg_bot = make_message(bot, "beep")
+        assert ex._matches_filters(msg_human, None, {"exclude_bots": True}) is True
+        assert ex._matches_filters(msg_bot, None, {"exclude_bots": True}) is False
+
+    def test_combined_and_logic(self):
+        ex = self._make_executor()
+        alice = make_member(1, "Alice", bot=False)
+        msg = make_message(alice, "found a bug", attachments=[make_attachment()])
+        # All filters match
+        assert ex._matches_filters(msg, alice, {
+            "author": "Alice",
+            "contains": "bug",
+            "has_attachments": True,
+            "exclude_bots": True,
+        }) is True
+        # One filter fails (wrong author)
+        bob = make_member(2, "Bob")
+        assert ex._matches_filters(msg, bob, {
+            "author": "Bob",
+            "contains": "bug",
+        }) is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: _status_for_tool with filters
+# ---------------------------------------------------------------------------
+
+
+class TestStatusForToolFilters:
+    def test_no_filters(self):
+        result = _status_for_tool("read_channel_history", {"channel_name": "general"})
+        assert result == "Reading messages from #general..."
+
+    def test_with_author_filter(self):
+        result = _status_for_tool("read_channel_history", {
+            "channel_name": "general",
+            "author": "Alice",
+        })
+        assert "Searching" in result
+        assert "Alice" in result
+
+    def test_with_contains_filter(self):
+        result = _status_for_tool("read_channel_history", {
+            "channel_name": "general",
+            "contains": "bug report",
+        })
+        assert "Searching" in result
+        assert "bug report" in result
+
+    def test_with_multiple_filters(self):
+        result = _status_for_tool("read_channel_history", {
+            "channel_name": "dev",
+            "author": "Alice",
+            "contains": "error",
+        })
+        assert "Searching #dev" in result
+        assert "Alice" in result
+        assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Filtered read_channel_history (integration)
+# ---------------------------------------------------------------------------
+
+
+def _make_filtered_channel(name, messages):
+    """Create a mock channel whose history() supports keyword args for filtering."""
+    ch = Mock(spec=discord.TextChannel)
+    ch.name = name
+    ch.category = None
+    ch.members = []
+
+    perms = Mock()
+    perms.read_message_history = True
+    ch.permissions_for = Mock(return_value=perms)
+
+    # The history mock needs to return batches based on kwargs
+    # For simplicity, return all messages and let the test verify filtering
+    def history_side_effect(**kwargs):
+        limit = kwargs.get("limit", 100)
+        before = kwargs.get("before")
+        after = kwargs.get("after")
+
+        filtered = list(messages)
+        if before:
+            filtered = [m for m in filtered if m.created_at < before]
+        if after:
+            filtered = [m for m in filtered if m.created_at > after]
+        # Discord returns newest first
+        filtered.sort(key=lambda m: m.created_at, reverse=True)
+        filtered = filtered[:limit]
+
+        result = Mock()
+        result.flatten = AsyncMock(return_value=filtered)
+        return result
+
+    ch.history = Mock(side_effect=history_side_effect)
+    return ch
+
+
+class TestFilteredReadChannelHistory:
+    @pytest.mark.asyncio
+    async def test_unfiltered_still_works(self):
+        """No filters = same behavior as before."""
+        alice = make_member(1, "Alice")
+        msg = make_message(alice, "Hello", datetime(2025, 1, 1, 14, 30))
+        ch = make_text_channel("general", messages=[msg])
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {"channel_name": "general"})
+        assert "Alice" in result
+        assert "Hello" in result
+
+    @pytest.mark.asyncio
+    async def test_filter_by_author(self):
+        alice = make_member(1, "Alice")
+        alice.name = "alice"
+        alice.nick = None
+        alice.global_name = None
+        bob = make_member(2, "Bob")
+        bob.name = "bob"
+        bob.nick = None
+        bob.global_name = None
+
+        msgs = [
+            make_message(alice, "Alice msg 1", datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)),
+            make_message(bob, "Bob msg", datetime(2025, 1, 1, 12, 1, tzinfo=timezone.utc)),
+            make_message(alice, "Alice msg 2", datetime(2025, 1, 1, 12, 2, tzinfo=timezone.utc)),
+        ]
+        ch = _make_filtered_channel("general", msgs)
+        guild = make_guild([alice, bob], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {
+            "channel_name": "general",
+            "author": "Alice",
+        })
+        assert "Alice msg 1" in result
+        assert "Alice msg 2" in result
+        assert "Bob msg" not in result
+
+    @pytest.mark.asyncio
+    async def test_filter_by_contains(self):
+        alice = make_member(1, "Alice")
+        msgs = [
+            make_message(alice, "This has a bug", datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)),
+            make_message(alice, "This is fine", datetime(2025, 1, 1, 12, 1, tzinfo=timezone.utc)),
+            make_message(alice, "Another bug here", datetime(2025, 1, 1, 12, 2, tzinfo=timezone.utc)),
+        ]
+        ch = _make_filtered_channel("general", msgs)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {
+            "channel_name": "general",
+            "contains": "bug",
+        })
+        assert "This has a bug" in result
+        assert "Another bug here" in result
+        assert "This is fine" not in result
+
+    @pytest.mark.asyncio
+    async def test_filter_by_has_attachments(self):
+        alice = make_member(1, "Alice")
+        msgs = [
+            make_message(alice, "no file", datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)),
+            make_message(alice, "has file", datetime(2025, 1, 1, 12, 1, tzinfo=timezone.utc),
+                         attachments=[make_attachment("photo.jpg")]),
+        ]
+        ch = _make_filtered_channel("general", msgs)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {
+            "channel_name": "general",
+            "has_attachments": True,
+        })
+        assert "has file" in result
+        assert "photo.jpg" in result
+        assert "no file" not in result
+
+    @pytest.mark.asyncio
+    async def test_filter_by_exclude_bots(self):
+        human = make_member(1, "Alice", bot=False)
+        bot = make_member(2, "BotUser", bot=True)
+        msgs = [
+            make_message(human, "human msg", datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)),
+            make_message(bot, "bot msg", datetime(2025, 1, 1, 12, 1, tzinfo=timezone.utc)),
+        ]
+        ch = _make_filtered_channel("general", msgs)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {
+            "channel_name": "general",
+            "exclude_bots": True,
+        })
+        assert "human msg" in result
+        assert "bot msg" not in result
+
+    @pytest.mark.asyncio
+    async def test_no_matches_returns_informative_message(self):
+        alice = make_member(1, "Alice")
+        msgs = [
+            make_message(alice, "hello", datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)),
+        ]
+        ch = _make_filtered_channel("general", msgs)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {
+            "channel_name": "general",
+            "contains": "nonexistent keyword xyz",
+        })
+        assert "No messages found" in result
+        assert "scanned" in result
+
+    @pytest.mark.asyncio
+    async def test_unknown_author_returns_error(self):
+        ch = _make_filtered_channel("general", [])
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {
+            "channel_name": "general",
+            "author": "NonExistentUser",
+        })
+        assert "Could not find a member" in result
+
+    @pytest.mark.asyncio
+    async def test_invalid_time_expression(self):
+        ch = _make_filtered_channel("general", [])
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {
+            "channel_name": "general",
+            "after": "not a real time",
+        })
+        assert "Could not parse" in result
+
+    @pytest.mark.asyncio
+    async def test_after_before_ordering_error(self):
+        ch = _make_filtered_channel("general", [])
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {
+            "channel_name": "general",
+            "after": "2025-06-01",
+            "before": "2025-01-01",
+        })
+        assert "after" in result.lower() and "earlier" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_filter_with_time_after(self):
+        alice = make_member(1, "Alice")
+        old = make_message(alice, "old msg", datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc))
+        new = make_message(alice, "new msg", datetime(2025, 6, 1, 12, 0, tzinfo=timezone.utc))
+        ch = _make_filtered_channel("general", [old, new])
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {
+            "channel_name": "general",
+            "after": "2025-01-01",
+        })
+        assert "new msg" in result
+        assert "old msg" not in result
+
+    @pytest.mark.asyncio
+    async def test_combined_filters(self):
+        alice = make_member(1, "Alice", bot=False)
+        alice.name = "alice"
+        alice.nick = None
+        alice.global_name = None
+        bob = make_member(2, "Bob", bot=False)
+        bob.name = "bob"
+        bob.nick = None
+        bob.global_name = None
+
+        msgs = [
+            make_message(alice, "Alice bug report", datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)),
+            make_message(bob, "Bob bug report", datetime(2025, 1, 1, 12, 1, tzinfo=timezone.utc)),
+            make_message(alice, "Alice feature request", datetime(2025, 1, 1, 12, 2, tzinfo=timezone.utc)),
+        ]
+        ch = _make_filtered_channel("general", msgs)
+        guild = make_guild([alice, bob], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {
+            "channel_name": "general",
+            "author": "Alice",
+            "contains": "bug",
+        })
+        assert "Alice bug report" in result
+        assert "Bob bug report" not in result
+        assert "feature request" not in result
+
+    @pytest.mark.asyncio
+    async def test_output_header_includes_filter_info(self):
+        alice = make_member(1, "Alice")
+        msgs = [
+            make_message(alice, "match", datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)),
+        ]
+        ch = _make_filtered_channel("general", msgs)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("read_channel_history", {
+            "channel_name": "general",
+            "contains": "match",
+        })
+        assert "scanned" in result
+        assert "match" in result
 
 
 if __name__ == "__main__":
