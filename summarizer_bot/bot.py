@@ -1,7 +1,6 @@
 import discord
 from config import Config
 from summarizer import AnthropicClient
-import json
 from utils import make_sys_prompt
 from message import parse_response, UserProfile, Message
 from token_estimation import TokenCounter
@@ -29,8 +28,7 @@ class ChatBot(discord.bot.Bot):
     
     def _setup_persona(self, path):
         with open(path, "r") as f:
-            persona = json.load(f)
-        return persona
+            return f.read()
     
     # overload
     async def on_ready(self):

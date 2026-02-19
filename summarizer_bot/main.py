@@ -4,7 +4,7 @@ from bot import ChatBot
 from commands import ChatAllowlistMixin, SummarizeMixin, UserProfileMixin 
 
 root_user = ".namielle"
-persona = "summarizer_bot/personas/mommy.json"
+persona = "summarizer_bot/personas/mommy.md"
 
 discord_api_key = os.environ.get("DISCORD_API_KEY")
 openai_api_key = os.environ.get("OPENAI_API_KEY")

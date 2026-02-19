@@ -20,12 +20,13 @@ def build_json(messages: list[Message], user_profiles: list[UserProfile]) -> tup
     )
 
 
-def make_sys_prompt(guild: discord.Guild, persona: dict) -> str: 
-    time_of_day = time.strftime("%H:%M")
-    day = time.strftime("%Y-%m-%d")
+def make_sys_prompt(guild: discord.Guild, persona: str) -> str:
+    current_time = time.strftime("%H:%M")
+    current_date = time.strftime("%Y-%m-%d")
 
-    prompt = json.dumps(persona, indent=2)
-    return prompt % guild.me.display_name
+    prompt = persona.replace("{{BOT_NAME}}", guild.me.display_name)
+    prompt += f"\n\n# Current Context\n\nCurrent date: {current_date}\nCurrent time: {current_time}\n"
+    return prompt
 
 
 def make_prompt(msg_str: str, message: discord.Message, user_profs_str: str | None = None) -> str:
