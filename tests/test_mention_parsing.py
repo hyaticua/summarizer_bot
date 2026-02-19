@@ -137,6 +137,14 @@ class TestAttemptToFindMember:
         result = attempt_to_find_member("actualuser (Display Name)", guild)
         assert result == member
 
+    def test_parentheses_format_username_with_global_name(self):
+        """Test parsing 'username (GlobalName)' format where username is first."""
+        member = MockMember(id=223, name="kkthxbai", global_name="Jared")
+        guild = MockGuild([member])
+
+        result = attempt_to_find_member("kkthxbai (Jared)", guild)
+        assert result == member
+
     def test_not_found(self):
         """Test that None is returned for non-existent users."""
         member = MockMember(id=333, name="user", global_name="User")
