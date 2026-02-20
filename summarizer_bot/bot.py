@@ -1,3 +1,5 @@
+import io
+
 import discord
 from loguru import logger
 from config import Config
@@ -84,12 +86,23 @@ class ChatBot(discord.bot.Bot):
 
                 tool_executor = DiscordToolExecutor(message.guild, self) if message.guild else None
 
-                raw_response = await self.llm_client.generate_as_chat_turns_with_search(
+                llm_response = await self.llm_client.generate_as_chat_turns_with_search(
                     messages, sys_prompt, status_callback=update_status, tool_executor=tool_executor
                 )
 
-                response = parse_response(raw_response, message.guild)
-                if sent_msg is None:
+                response = parse_response(llm_response.text, message.guild)
+
+                # Build Discord file attachments from code execution outputs
+                discord_files = []
+                for f in llm_response.files[:10]:  # Discord caps at 10 files
+                    discord_files.append(discord.File(io.BytesIO(f.data), filename=f.filename))
+
+                if discord_files:
+                    # Message.edit() cannot add file attachments — delete status msg and send fresh reply
+                    if sent_msg:
+                        await sent_msg.delete()
+                    await message.reply(response[:2000], files=discord_files)
+                elif sent_msg is None:
                     await message.reply(response[:2000])
                 else:
                     await sent_msg.edit(content=response[:2000])

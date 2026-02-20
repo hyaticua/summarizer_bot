@@ -1,4 +1,4 @@
-anthropic
+anthropic>=0.42.0
 openai
 py-cord
 loguru

@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -6,8 +7,19 @@ from message import Message
 from discord_tools import DISCORD_TOOLS, _status_for_tool
 from loguru import logger
 
-WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 5}
-WEB_FETCH_TOOL = {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 3}
+@dataclass
+class FileAttachment:
+    data: bytes
+    filename: str
+
+@dataclass
+class LLMResponse:
+    text: str
+    files: list[FileAttachment] = field(default_factory=list)
+
+WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
+WEB_FETCH_TOOL = {"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": 3}
+CODE_EXECUTION_TOOL = { "type": "code_execution_20250825", "name": "code_execution" }
 MAX_CONTINUATIONS = 3
 MAX_TOOL_ROUNDS = 3
 
@@ -90,7 +102,7 @@ class AnthropicClient:
                       response.usage.input_tokens, response.usage.output_tokens)
         return response.content[0].text
 
-    async def generate_as_chat_turns_with_search(self, messages: list[Message], sys_prompt: str, status_callback=None, tool_executor=None) -> str:
+    async def generate_as_chat_turns_with_search(self, messages: list[Message], sys_prompt: str, status_callback=None, tool_executor=None) -> LLMResponse:
         """Generate a response using streaming with web search and Discord tool support.
 
         Uses streaming to detect web search events mid-response and calls
@@ -110,24 +122,27 @@ class AnthropicClient:
             return await self._stream_with_search(chat_turns, sys_prompt, status_callback, tool_executor)
         except Exception as e:
             logger.warning("Streaming failed, falling back to non-streaming: {}", e)
-            return await self.generate_as_chat_turns(messages, sys_prompt)
+            text = await self.generate_as_chat_turns(messages, sys_prompt)
+            return LLMResponse(text=text)
 
-    async def _stream_with_search(self, chat_turns: list[dict], sys_prompt: str, status_callback=None, tool_executor=None) -> str:
+    async def _stream_with_search(self, chat_turns: list[dict], sys_prompt: str, status_callback=None, tool_executor=None) -> LLMResponse:
         """Run a streaming request with web search and tool use, handling continuations."""
         turns = list(chat_turns)
         text = ""
         tool_rounds = 0
+        all_file_ids: list[str] = []
 
         for iteration in range(MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1):
             response = await self._stream_single_request(turns, sys_prompt, status_callback, tool_executor)
             text = self._extract_text(response)
+            all_file_ids.extend(self._extract_file_ids(response))
 
             logger.debug("Stream iteration {}: stop_reason={}, tokens_in={}, tokens_out={}",
                          iteration, response.stop_reason,
                          response.usage.input_tokens, response.usage.output_tokens)
 
             if response.stop_reason == "pause_turn":
-                # Server-side tool continuation (web search or web fetch)
+                # Server-side tool continuation (web search, web fetch, or code execution)
                 logger.info("Server tool continuation (iteration {})", iteration)
                 turns.append({"role": "assistant", "content": response.content})
                 turns.append({"role": "user", "content": "Continue."})
@@ -135,7 +150,7 @@ class AnthropicClient:
                 tool_rounds += 1
                 if tool_rounds > MAX_TOOL_ROUNDS:
                     logger.warning("Max tool rounds ({}) reached, returning partial response", MAX_TOOL_ROUNDS)
-                    return text
+                    break
 
                 # Extract tool_use blocks and execute them
                 tool_results = []
@@ -156,28 +171,35 @@ class AnthropicClient:
                 turns.append({"role": "user", "content": tool_results})
             else:
                 logger.debug("Stream complete (stop_reason={})", response.stop_reason)
-                return text
+                break
+
+        # Download any files produced by code execution
+        logger.info("Collected {} file IDs across all iterations: {}", len(all_file_ids), all_file_ids)
+        files = await self._download_files(all_file_ids) if all_file_ids else []
 
         # Hit max rounds — return what we have
-        logger.warning("Hit max stream iterations ({}), returning partial response", MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1)
-        return text
+        if not text and not files:
+            logger.warning("Hit max stream iterations ({}), returning empty response", MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1)
+        return LLMResponse(text=text, files=files)
 
     async def _stream_single_request(self, turns, sys_prompt, status_callback, tool_executor=None):
         """Execute a single streaming request, calling status_callback on stream events."""
         thinking_notified = False
         search_notified = False
+        code_notified = False
         fetch_pending = False  # True while we're waiting for the fetch URL
         fetch_input_json = ""  # Accumulates partial JSON for the fetch input
 
-        tools = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
+        tools = [CODE_EXECUTION_TOOL, WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
         if tool_executor:
             tools.extend(DISCORD_TOOLS)
 
-        async with self.client.messages.stream(
+        async with self.client.beta.messages.stream(
             model=self.model,
             system=sys_prompt or default_sys_prompt,
             max_tokens=2048,
             tools=tools,
+            betas=["files-api-2025-04-14"],
             messages=turns,
         ) as stream:
             async for event in stream:
@@ -191,12 +213,16 @@ class AnthropicClient:
                         await status_callback("Thinking...")
                     elif block_type == "server_tool_use":
                         tool_name = getattr(block, "name", None)
+                        logger.info("Server tool use: {}", tool_name)
                         if not search_notified and tool_name == "web_search":
                             search_notified = True
                             await status_callback("Searching the web...")
                         elif tool_name == "web_fetch":
                             fetch_pending = True
                             fetch_input_json = ""
+                        elif not code_notified and tool_name in ("bash_code_execution", "text_editor_code_execution"):
+                            code_notified = True
+                            await status_callback("Running code...")
                 elif event.type == "content_block_delta" and fetch_pending:
                     delta = event.delta
                     if getattr(delta, "type", None) == "input_json_delta":
@@ -215,11 +241,76 @@ class AnthropicClient:
 
             return await stream.get_final_message()
 
+    _CODE_EXEC_RESULT_TYPES = (
+        "code_execution_tool_result",
+        "bash_code_execution_tool_result",
+        "text_editor_code_execution_tool_result",
+    )
+
     @staticmethod
-    def _extract_text(response) -> str:
-        """Extract and concatenate all text blocks from a response, skipping tool blocks."""
+    def _get_content(block):
+        """Get content from a code execution result block, handling both dict and object."""
+        content = getattr(block, "content", None)
+        return content
+
+    @staticmethod
+    def _get_field(obj, key, default=None):
+        """Get a field from either a dict or an object."""
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    @classmethod
+    def _extract_text(cls, response) -> str:
+        """Extract text blocks and code execution stdout from a response."""
         parts = []
         for block in response.content:
             if block.type == "text":
                 parts.append(block.text)
+            elif block.type in cls._CODE_EXEC_RESULT_TYPES:
+                content = cls._get_content(block)
+                if content:
+                    stdout = cls._get_field(content, "stdout", "")
+                    if stdout:
+                        parts.append(f"**Code output:**\n```\n{stdout}\n```")
         return "\n".join(parts) if parts else ""
+
+    @classmethod
+    def _extract_file_ids(cls, response) -> list[str]:
+        """Extract file IDs from code execution tool result blocks."""
+        file_ids = []
+        for block in response.content:
+            if block.type not in cls._CODE_EXEC_RESULT_TYPES:
+                continue
+            content = cls._get_content(block)
+            logger.debug("Code exec result ({}): {}", block.type, content)
+            if not content:
+                continue
+            output_list = cls._get_field(content, "content", [])
+            if not output_list:
+                continue
+            for item in output_list:
+                file_id = cls._get_field(item, "file_id")
+                if file_id:
+                    logger.info("Found file ID: {}", file_id)
+                    file_ids.append(file_id)
+        return file_ids
+
+    async def _download_files(self, file_ids: list[str]) -> list[FileAttachment]:
+        """Download files from Anthropic's Files API."""
+        MAX_FILE_SIZE = 8 * 1024 * 1024  # 8MB Discord limit
+        files = []
+        for file_id in file_ids:
+            try:
+                metadata = await self.client.beta.files.retrieve_metadata(file_id)
+                if metadata.size_bytes and metadata.size_bytes > MAX_FILE_SIZE:
+                    logger.warning("Skipping file {} ({} bytes) — exceeds 8MB Discord limit",
+                                   file_id, metadata.size_bytes)
+                    continue
+                resp = await self.client.beta.files.download(file_id)
+                data = await resp.read()
+                files.append(FileAttachment(data=data, filename=metadata.filename))
+                logger.info("Downloaded file: {} ({} bytes)", metadata.filename, len(data))
+            except Exception as e:
+                logger.warning("Failed to download file {}: {}", file_id, e)
+        return files
