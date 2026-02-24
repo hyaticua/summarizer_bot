@@ -90,6 +90,28 @@ ALL_DISCORD_TOOLS = [
         }
     },
     {
+        "name": "react_to_message",
+        "description": "React to a message with an emoji. Use this to express acknowledgment, agreement, humor, or emotion in response to messages — even when not explicitly asked to react.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_name": {
+                    "type": "string",
+                    "description": "Name of the channel the message is in."
+                },
+                "message_id": {
+                    "type": "string",
+                    "description": "The ID of the message to react to."
+                },
+                "emoji": {
+                    "type": "string",
+                    "description": "Unicode emoji (e.g. '👍') or custom emoji name to react with."
+                }
+            },
+            "required": ["channel_name", "message_id", "emoji"]
+        }
+    },
+    {
         "name": "delete_messages",
         "description": "Delete messages in a channel. Can delete a specific message by ID, or delete your own recent messages by count.",
         "input_schema": {
@@ -181,28 +203,6 @@ ALL_DISCORD_TOOLS = [
                 }
             },
             "required": ["action"]
-        }
-    },
-    {
-        "name": "react_to_message",
-        "description": "React to a message with an emoji.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "channel_name": {
-                    "type": "string",
-                    "description": "Name of the channel the message is in."
-                },
-                "message_id": {
-                    "type": "string",
-                    "description": "The ID of the message to react to."
-                },
-                "emoji": {
-                    "type": "string",
-                    "description": "Unicode emoji (e.g. '👍') or custom emoji name to react with."
-                }
-            },
-            "required": ["channel_name", "message_id", "emoji"]
         }
     },
 ]
