@@ -119,6 +119,11 @@ python -m summarizer_bot.main
 - Two-level hierarchy:
   - Server configs: Per-guild settings (chat allowlists, custom profiles)
   - User configs: Per-user profiles (registered via `/register_user`)
+- Top-level keys for server authorization:
+  - `authorized_servers`: list of guild ID ints. When absent, all servers are allowed (backward compat). Once set, only listed servers are served.
+  - `unauthorized_mode`: `"ignore"` | `"polite"` | `"leave"` | `"bad_bot"`. Default: `"ignore"`.
+  - `polite_declined`: list of guild IDs already sent the one-shot refusal. Cleared when mode changes away from polite or when a server gets authorized.
+- Methods: `is_server_authorized()`, `get_authorized_servers()`, `set_authorized_servers()`, `get_unauthorized_mode()`, `set_unauthorized_mode()`, `get_polite_declined()`, `add_polite_declined()`, `clear_polite_declined()`
 - Async file I/O using `aiofiles`
 
 **token_estimation.py (Token Counting)**
@@ -146,6 +151,12 @@ Commands are implemented as mixins in `summarizer_bot/commands/`:
 - Allows users to register profile info (max 128 chars, no newlines)
 - Included in LLM context for personalized responses
 
+**ServerAuthMixin** (root user only):
+- `/server_authorize <server_id>`: Add a server to the authorized list. First use activates the auth system (warns the user).
+- `/server_deauthorize <server_id>`: Remove a server from the authorized list.
+- `/server_auth_list`: Show authorized servers and current unauthorized mode.
+- `/server_auth_mode <mode>`: Set behavior for unauthorized servers (`ignore`, `polite`, `leave`, `bad_bot`). Clears `polite_declined` when switching away from `polite`.
+
 ### Persona System
 
 Personas are Markdown files in `summarizer_bot/personas/` with structured sections:
@@ -159,7 +170,20 @@ Personas are Markdown files in `summarizer_bot/personas/` with structured sectio
 
 Current persona is set in `main.py` (currently `personas/mommy.md`).
 
+`bad_bot.md` is a separate chaotic anti-persona used only for unauthorized servers in `bad_bot` mode. It is loaded in `ChatBot.__init__()` from a hardcoded path.
+
 ## Key Behaviors
+
+**Server Authorization**:
+- Checked in `on_message` after self-skip, before allowlist. DMs bypass (no guild context).
+- When `authorized_servers` key is absent from config, all servers are allowed (backward compat).
+- When active, only listed servers get normal bot behavior. Unauthorized servers are handled by mode:
+  - `ignore`: Silently do nothing (default).
+  - `polite`: One-shot refusal message per server (tracked in `polite_declined`), then silent.
+  - `leave`: Send refusal message, then `guild.leave()`.
+  - `bad_bot`: Chaotic gremlin persona using Haiku (`claude-haiku-4-5-20251001`), no tools, no streaming, 20-message context. Uses `personas/bad_bot.md`.
+- Only triggers on bot mention (same as normal chat).
+- `bad_bot_client` and `bad_bot_persona` are initialized in `ChatBot.__init__()` alongside the main client.
 
 **Automatic Chat Participation**:
 - Bot responds when mentioned or in DMs

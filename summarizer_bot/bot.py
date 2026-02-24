@@ -1,4 +1,5 @@
 import io
+import os
 
 import discord
 from loguru import logger
@@ -12,6 +13,9 @@ from token_estimation import TokenCounter
 import time
 
 message_limit = 1000
+
+BAD_BOT_PERSONA_PATH = os.path.join(os.path.dirname(__file__), "personas", "bad_bot.md")
+BAD_BOT_CONTEXT_LIMIT = 20
 
 
 class ChatBot(discord.bot.Bot):
@@ -27,26 +31,89 @@ class ChatBot(discord.bot.Bot):
         self.token_counter = TokenCounter(self.llm_client.client, self.llm_client.model, use_api=False)
         self.scheduler = Scheduler(self)
 
+        self.bad_bot_client = AnthropicClient(self.llm_api_key, model="claude-haiku-4-5-20251001")
+        self.bad_bot_persona = self._setup_persona(BAD_BOT_PERSONA_PATH)
+
     def _setup_intents(self):
         intents = discord.Intents().default()
         intents.members = True
         return intents
     
     def _setup_persona(self, path):
+        logger.info("Loading persona from {}", os.path.abspath(path))
         with open(path, "r") as f:
             return f.read()
-    
+
+    async def _handle_unauthorized(self, message: discord.Message):
+        """Handle a message from an unauthorized server. Only acts on mentions."""
+        if not (self.user and self.user.mentioned_in(message)):
+            return
+
+        mode = self.config.get_unauthorized_mode()
+        guild = message.guild
+
+        if mode == "ignore":
+            logger.debug("Ignoring mention from unauthorized server {} ({})", guild.name, guild.id)
+            return
+
+        elif mode == "polite":
+            declined = self.config.get_polite_declined()
+            if guild.id in declined:
+                logger.debug("Already sent polite refusal to {} ({})", guild.name, guild.id)
+                return
+            logger.info("Sending polite refusal to {} ({})", guild.name, guild.id)
+            await message.reply("Sorry, I'm not set up for this server! Please contact my admin if you think this is a mistake.")
+            await self.config.add_polite_declined(guild.id)
+
+        elif mode == "leave":
+            logger.info("Sending refusal and leaving {} ({})", guild.name, guild.id)
+            await message.reply("Sorry, I'm not set up for this server! I'll see myself out.")
+            await guild.leave()
+
+        elif mode == "bad_bot":
+            await self._handle_bad_bot(message)
+
+    async def _handle_bad_bot(self, message: discord.Message):
+        """Respond as the chaotic bad_bot persona on unauthorized servers."""
+        logger.info("bad_bot triggered by {} in {} ({})",
+                     message.author.display_name, message.guild.name, message.guild.id)
+
+        raw_messages = await self.fetch_messages(message.channel.id, num_messages=BAD_BOT_CONTEXT_LIMIT)
+        messages, _ = await self.process_messages(raw_messages, skip_bots=False)
+        # Drop the bot's own messages so Haiku doesn't mimic the main persona's style
+        # To undo: comment out the next line
+        messages = [m for m in messages if not m.from_self]
+
+        sys_prompt = make_sys_prompt(message.guild, self.bad_bot_persona, channel=message.channel)
+        logger.debug("bad_bot sys_prompt first 100 chars: {}", sys_prompt[:300])
+        response_text = await self.bad_bot_client.generate_as_chat_turns(messages, sys_prompt)
+        response = parse_response(response_text, message.guild)
+
+        await message.reply(response[:2000])
+
     # overload
     async def on_ready(self):
         logger.info("Logged in as {}", self.user)
         for guild in self.guilds:
             logger.info("Connected to guild: {} (id={})", guild.name, guild.id)
+            # One-time nickname reset — remove after next restart
+            if guild.me.nick is not None:
+                try:
+                    await guild.me.edit(nick=None)
+                    logger.info("Reset nickname in {} ({})", guild.name, guild.id)
+                except discord.errors.Forbidden:
+                    logger.warning("Cannot reset nickname in {} ({})", guild.name, guild.id)
         await self.scheduler.start()
 
     # overload
     async def on_message(self, message: discord.Message):
         try:
             if message.author == self.user:
+                return
+
+            # Server authorization gate (DMs bypass)
+            if message.guild and not self.config.is_server_authorized(message.guild.id):
+                await self._handle_unauthorized(message)
                 return
 
             server_config = self.config.get_server_config(message.guild.id)
@@ -65,6 +132,7 @@ class ChatBot(discord.bot.Bot):
                 start_time = time.time()
 
                 sys_prompt = make_sys_prompt(message.guild, self.persona, channel=message.channel)
+                logger.debug("Normal chat sys_prompt first 100 chars: {}", sys_prompt[:300])
 
                 # Build context with token awareness
                 messages = await self.build_context_with_token_limit(

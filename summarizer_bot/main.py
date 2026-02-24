@@ -38,7 +38,7 @@ logging.basicConfig(handlers=[_InterceptHandler()], level=logging.INFO, force=Tr
 # ---------------------------------------------------------------------------
 
 from bot import ChatBot
-from commands import ChatAllowlistMixin, SummarizeMixin, UserProfileMixin
+from commands import ChatAllowlistMixin, ServerAuthMixin, SummarizeMixin, UserProfileMixin
 
 root_user = ".namielle"
 persona = "summarizer_bot/personas/mommy.md"
@@ -54,6 +54,7 @@ logger.info("API keys loaded: DISCORD={}, OPENAI={}, ANTHROPIC={}",
 
 bot = ChatBot(root_user=root_user, llm_api_key=anthropic_api_key, persona_path=persona)
 bot.add_cog(ChatAllowlistMixin(bot))
+bot.add_cog(ServerAuthMixin(bot))
 bot.add_cog(SummarizeMixin(bot))
 bot.add_cog(UserProfileMixin(bot))
 
