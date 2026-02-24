@@ -133,6 +133,56 @@ ALL_DISCORD_TOOLS = [
             "required": ["member", "duration"]
         }
     },
+    {
+        "name": "schedule_message",
+        "description": "Schedule a message or dynamic prompt to be sent in a channel at a future time. Static messages are sent as-is. Dynamic prompts are processed through the LLM at execution time with full tool access (web search, code execution, etc.).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_name": {
+                    "type": "string",
+                    "description": "Name of the channel to send the message in."
+                },
+                "time": {
+                    "type": "string",
+                    "description": "When to execute. Examples: 'in 2 hours', 'tomorrow at 9am', '2026-03-01 14:00'."
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["static", "dynamic"],
+                    "description": "Static sends content as-is. Dynamic processes content as an LLM prompt at execution time with full tool access."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The message text (static) or prompt to process at execution time (dynamic)."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why this is being scheduled."
+                }
+            },
+            "required": ["channel_name", "time", "type", "content", "reason"]
+        }
+    },
+    {
+        "name": "manage_scheduled",
+        "description": "List or cancel scheduled tasks for this server.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "cancel"],
+                    "description": "Whether to list all scheduled tasks or cancel a specific one."
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "The task ID to cancel. Required when action is 'cancel'."
+                }
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 # Maps tool names to the guild-level Discord permissions required to expose that tool.
@@ -143,6 +193,8 @@ TOOL_PERMISSIONS = {
     "read_channel_history": [],
     "delete_messages": [],               # bot can always delete own; manage_messages checked per-message
     "timeout_member": ["moderate_members"],
+    "schedule_message": [],
+    "manage_scheduled": [],
 }
 
 
@@ -220,6 +272,15 @@ def _status_for_tool(name: str, tool_input: dict) -> str:
     elif name == "timeout_member":
         member = tool_input.get("member", "someone")
         return f"Timing out {member}..."
+    elif name == "schedule_message":
+        channel = tool_input.get("channel_name", "unknown")
+        time_str = tool_input.get("time", "")
+        return f"Scheduling a message in #{channel} for {time_str}..."
+    elif name == "manage_scheduled":
+        action = tool_input.get("action", "list")
+        if action == "cancel":
+            return "Cancelling a scheduled task..."
+        return "Listing scheduled tasks..."
     return "Using a tool..."
 
 
@@ -267,9 +328,10 @@ def _parse_duration(expr: str) -> timedelta | None:
 
 
 class DiscordToolExecutor:
-    def __init__(self, guild: discord.Guild, bot: discord.Bot):
+    def __init__(self, guild: discord.Guild, bot: discord.Bot, requesting_user: str = "unknown"):
         self.guild = guild
         self.bot = bot
+        self.requesting_user = requesting_user
 
     def get_available_tools(self) -> list[dict]:
         """Return tool definitions filtered by the bot's guild permissions."""
@@ -295,6 +357,10 @@ class DiscordToolExecutor:
                 result = await self._delete_messages(tool_input)
             elif name == "timeout_member":
                 result = await self._timeout_member(tool_input)
+            elif name == "schedule_message":
+                result = await self._schedule_message(tool_input)
+            elif name == "manage_scheduled":
+                result = await self._manage_scheduled(tool_input)
             else:
                 result = f"Unknown tool: {name}"
             logger.info(f"Tool result ({name}): {result[:500]}{'...' if len(result) > 500 else ''}")
@@ -668,6 +734,64 @@ class DiscordToolExecutor:
         duration_desc = duration_str.strip()
         reason_desc = f" Reason: {reason}" if reason else ""
         return f"Timed out {member.display_name} for {duration_desc}.{reason_desc}"
+
+    async def _schedule_message(self, tool_input: dict) -> str:
+        channel_name = tool_input.get("channel_name")
+        if not channel_name:
+            return "Error: channel_name is required."
+
+        time_str = tool_input.get("time")
+        if not time_str:
+            return "Error: time is required."
+
+        task_type = tool_input.get("type")
+        if task_type not in ("static", "dynamic"):
+            return "Error: type must be 'static' or 'dynamic'."
+
+        content = tool_input.get("content")
+        if not content:
+            return "Error: content is required."
+
+        reason = tool_input.get("reason")
+        if not reason:
+            return "Error: reason is required."
+
+        # Resolve channel to get its ID
+        channel = self._fuzzy_find_channel(channel_name, channel_types=["text"])
+        if isinstance(channel, str):
+            return channel  # error message
+
+        scheduler = getattr(self.bot, "scheduler", None)
+        if scheduler is None:
+            return "Scheduling is not available."
+
+        return await scheduler.add_task(
+            guild_id=self.guild.id,
+            channel_id=channel.id,
+            channel_name=channel.name,
+            execute_at_str=time_str,
+            task_type=task_type,
+            content=content,
+            reason=reason,
+            created_by=self.requesting_user,
+        )
+
+    async def _manage_scheduled(self, tool_input: dict) -> str:
+        action = tool_input.get("action")
+        if action not in ("list", "cancel"):
+            return "Error: action must be 'list' or 'cancel'."
+
+        scheduler = getattr(self.bot, "scheduler", None)
+        if scheduler is None:
+            return "Scheduling is not available."
+
+        if action == "list":
+            return scheduler.list_tasks(self.guild.id)
+        elif action == "cancel":
+            task_id = tool_input.get("task_id")
+            if not task_id:
+                return "Error: task_id is required for cancel."
+            return await scheduler.cancel_task(self.guild.id, task_id)
 
     def _no_results_message(self, channel_name: str, tool_input: dict, scanned: int) -> str:
         """Informative message when no messages match the filters."""

@@ -90,8 +90,11 @@ python -m summarizer_bot.main
     - `before`/`after` are passed to `channel.history()` for server-side filtering; other filters applied client-side
   - `delete_messages`: Delete messages in a channel. By specific message ID (own messages always allowed; others' require `manage_messages`), or by count to delete the bot's own recent messages (max 5, no special permission needed)
   - `timeout_member`: Temporarily timeout a member. Fuzzy-finds the member, parses a human-readable duration via `_parse_duration()`, guards against bots/self/role hierarchy, calls `member.timeout_for()`
+  - `schedule_message`: Schedule a static message or dynamic LLM prompt for future execution. Resolves channel, validates time/limits, delegates to `Scheduler.add_task()`
+  - `manage_scheduled`: List or cancel scheduled tasks for the guild. Delegates to `Scheduler.list_tasks()` / `Scheduler.cancel_task()`
 - `TOOL_PERMISSIONS`: Maps tool names to required guild-level Discord permissions. Tools with unmet permissions are excluded from the LLM's tool list at request time
 - `DiscordToolExecutor`: Executes tools against a `discord.Guild`, returns results as strings
+  - Constructor accepts `requesting_user` param (display name of the user who triggered the tool) for task attribution
   - `get_available_tools()`: Filters `ALL_DISCORD_TOOLS` by the bot's guild permissions, only exposing tools the bot can actually use
 - `_fuzzy_find_channel()`: Channel name resolution (exact → case-insensitive → substring match)
 - `_parse_duration()`: Parses "N unit(s)" strings (e.g., "5 minutes", "1 hour") into `timedelta`
@@ -99,6 +102,17 @@ python -m summarizer_bot.main
 - Errors are returned as descriptive strings to the LLM, not raised
 - Tools are only offered in guild contexts (not DMs)
 - Tool output uses `format_message_text()` from `message.py` for consistent message formatting with the chat context
+
+**scheduler.py (Scheduled Actions)**
+- `ScheduledTask` dataclass: `id` (8-char uuid), `guild_id`, `channel_id`, `channel_name`, `execute_at` (ISO 8601 UTC), `task_type` ("static" or "dynamic"), `content`, `reason`, `created_by`, `created_at`
+- Persistence via `scheduled_tasks.json` (separate from config.json — transient operational data). Uses `aiofiles` for writes, sync `open()` for startup load
+- `_parse_future_time()`: Parses future time expressions — "in N units", "today/tomorrow at HH:MM", and absolute dates via `dateutil`
+- `Scheduler` class:
+  - Background `asyncio` polling loop (every 30s) started from `bot.on_ready()`, with double-start guard
+  - Static execution: `channel.send(content)`
+  - Dynamic execution: Builds system prompt, calls `_stream_with_search()` with a `DiscordToolExecutor` so the LLM has full tool access (web search, code execution, Discord tools). Sends result (text + file attachments) to the channel
+  - Stale task handling on restart: tasks up to 1 hour past due are executed; older ones are discarded with a log warning
+  - Limits: 25 tasks per guild, 30 days max horizon, 1 minute minimum lead time
 
 **config.py (Configuration)**
 - JSON-based configuration stored in `config.json`
@@ -163,9 +177,17 @@ Current persona is set in `main.py` (currently `personas/mommy.md`).
   - LLM requests a tool → bot executes it → result returned to LLM → LLM continues
   - Tools only available in guild contexts (not DMs)
   - Permission-gated: `get_available_tools()` checks the bot's guild permissions and only exposes tools the bot can use (e.g., `timeout_member` requires `moderate_members`)
-  - Read tools: `get_server_members`, `list_channels`, `read_channel_history` (no special permissions)
-  - Write tools: `delete_messages` (own messages always; others' require `manage_messages` per-channel), `timeout_member` (requires `moderate_members` guild permission)
+  - Read tools: `get_server_members`, `list_channels`, `read_channel_history`, `manage_scheduled` (no special permissions)
+  - Write tools: `delete_messages` (own messages always; others' require `manage_messages` per-channel), `timeout_member` (requires `moderate_members` guild permission), `schedule_message` (no special permissions)
   - Bot does not need `presences` intent; uses voice presence and message activity as proxies
+
+**Scheduled Actions**:
+- Users can ask the bot to schedule messages or dynamic prompts for future execution
+- Static tasks send content as-is at the scheduled time
+- Dynamic tasks process content through the LLM at execution time with full tool access (web search, code execution, Discord tools)
+- Background polling loop checks every 30s for due tasks
+- Tasks persist across restarts via `scheduled_tasks.json`; tasks up to 1 hour overdue are executed on restart, older ones are discarded
+- Limits: 25 tasks per guild, 30-day max horizon, 1-minute minimum lead time
 
 **Message Format for LLM**:
 - User messages: Structured JSON with `message_id`, `created_at`, `author`, `content`

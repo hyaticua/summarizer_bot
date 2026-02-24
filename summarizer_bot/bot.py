@@ -7,6 +7,7 @@ from summarizer import AnthropicClient
 from utils import make_sys_prompt
 from message import parse_response, UserProfile, Message
 from discord_tools import DiscordToolExecutor
+from scheduler import Scheduler
 from token_estimation import TokenCounter
 import time
 
@@ -24,6 +25,7 @@ class ChatBot(discord.bot.Bot):
         self.llm_client = AnthropicClient(self.llm_api_key)
         # use_api=False for fast estimation, use_api=True for accurate API-based counting
         self.token_counter = TokenCounter(self.llm_client.client, self.llm_client.model, use_api=False)
+        self.scheduler = Scheduler(self)
 
     def _setup_intents(self):
         intents = discord.Intents().default()
@@ -39,6 +41,7 @@ class ChatBot(discord.bot.Bot):
         logger.info("Logged in as {}", self.user)
         for guild in self.guilds:
             logger.info("Connected to guild: {} (id={})", guild.name, guild.id)
+        await self.scheduler.start()
 
     # overload
     async def on_message(self, message: discord.Message):
@@ -84,7 +87,7 @@ class ChatBot(discord.bot.Bot):
                     else:
                         await sent_msg.edit(content=content)
 
-                tool_executor = DiscordToolExecutor(message.guild, self) if message.guild else None
+                tool_executor = DiscordToolExecutor(message.guild, self, requesting_user=message.author.display_name) if message.guild else None
 
                 llm_response = await self.llm_client.generate_as_chat_turns_with_search(
                     messages, sys_prompt, status_callback=update_status, tool_executor=tool_executor
