@@ -85,7 +85,6 @@ class ChatBot(discord.bot.Bot):
         messages = [m for m in messages if not m.from_self]
 
         sys_prompt = make_sys_prompt(message.guild, self.bad_bot_persona, channel=message.channel)
-        logger.debug("bad_bot sys_prompt first 100 chars: {}", sys_prompt[:300])
         response_text = await self.bad_bot_client.generate_as_chat_turns(messages, sys_prompt)
         response = parse_response(response_text, message.guild)
 
@@ -132,7 +131,6 @@ class ChatBot(discord.bot.Bot):
                 start_time = time.time()
 
                 sys_prompt = make_sys_prompt(message.guild, self.persona, channel=message.channel)
-                logger.debug("Normal chat sys_prompt first 100 chars: {}", sys_prompt[:300])
 
                 # Build context with token awareness
                 messages = await self.build_context_with_token_limit(
@@ -146,16 +144,18 @@ class ChatBot(discord.bot.Bot):
                 sent_msg = None
                 statuses = []
 
+                tool_executor = DiscordToolExecutor(message.guild, self, requesting_user=message.author.display_name) if message.guild else None
+
                 async def update_status(status):
                     nonlocal sent_msg
                     statuses.append(status)
                     content = "\n".join(statuses)
                     if sent_msg is None:
                         sent_msg = await message.reply(content)
+                        if tool_executor:
+                            tool_executor.active_message_id = sent_msg.id
                     else:
                         await sent_msg.edit(content=content)
-
-                tool_executor = DiscordToolExecutor(message.guild, self, requesting_user=message.author.display_name) if message.guild else None
 
                 llm_response = await self.llm_client.generate_as_chat_turns_with_search(
                     messages, sys_prompt, status_callback=update_status, tool_executor=tool_executor

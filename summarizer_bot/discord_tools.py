@@ -357,6 +357,7 @@ class DiscordToolExecutor:
         self.guild = guild
         self.bot = bot
         self.requesting_user = requesting_user
+        self.active_message_id: int | None = None  # status message to exclude from deletions
 
     def get_available_tools(self) -> list[dict]:
         """Return tool definitions filtered by the bot's guild permissions."""
@@ -602,7 +603,7 @@ class DiscordToolExecutor:
         for msg in messages:
             content = format_message_text(msg, max_length=200, include_attachment_names=True)
             timestamp = msg.created_at.strftime("%H:%M")
-            line = f"[{timestamp}] {msg.author.display_name}: {content}"
+            line = f"[{timestamp}] (id:{msg.id}) {msg.author.display_name}: {content}"
             total_chars += len(line)
             if total_chars > max_total:
                 lines.append("... (truncated)")
@@ -651,7 +652,7 @@ class DiscordToolExecutor:
             else:
                 timestamp = msg.created_at.strftime("%H:%M")
 
-            line = f"[{timestamp}] {msg.author.display_name}: {content}"
+            line = f"[{timestamp}] (id:{msg.id}) {msg.author.display_name}: {content}"
             total_chars += len(line)
             if total_chars > max_total:
                 lines.append("... (truncated)")
@@ -671,7 +672,7 @@ class DiscordToolExecutor:
         if not channel_name:
             return "Error: channel_name is required."
 
-        channel = self._fuzzy_find_channel(channel_name, channel_types=["text"])
+        channel = self._fuzzy_find_channel(channel_name)
         if isinstance(channel, str):
             return channel  # error message
 
@@ -679,6 +680,9 @@ class DiscordToolExecutor:
 
         if message_id:
             # Delete a specific message by ID
+            if self.active_message_id and int(message_id) == self.active_message_id:
+                return "Can't delete my current response message."
+
             try:
                 msg = await channel.fetch_message(int(message_id))
             except discord.NotFound:
@@ -710,7 +714,7 @@ class DiscordToolExecutor:
             except discord.Forbidden:
                 return f"I don't have permission to read #{channel.name}."
 
-            own_msgs = [m for m in messages if m.author.id == self.guild.me.id]
+            own_msgs = [m for m in messages if m.author.id == self.guild.me.id and m.id != self.active_message_id]
             to_delete = own_msgs[:count]
 
             if not to_delete:
@@ -784,7 +788,7 @@ class DiscordToolExecutor:
             return "Error: reason is required."
 
         # Resolve channel to get its ID
-        channel = self._fuzzy_find_channel(channel_name, channel_types=["text"])
+        channel = self._fuzzy_find_channel(channel_name)
         if isinstance(channel, str):
             return channel  # error message
 
@@ -833,7 +837,7 @@ class DiscordToolExecutor:
         if not emoji:
             return "Error: emoji is required."
 
-        channel = self._fuzzy_find_channel(channel_name, channel_types=["text"])
+        channel = self._fuzzy_find_channel(channel_name)
         if isinstance(channel, str):
             return channel  # error message
 
