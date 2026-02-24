@@ -40,7 +40,7 @@ class TokenCounter:
         self.model = model
         self.use_api = use_api
 
-    async def count_tokens(self, messages: list["Message"], system_prompt: str = "") -> int:
+    async def count_tokens(self, messages: list["Message"], system_prompt: "str | list" = "") -> int:
         """
         Count tokens for a list of messages.
 
@@ -48,7 +48,7 @@ class TokenCounter:
 
         Args:
             messages: List of Message objects
-            system_prompt: The system prompt (needed for accurate counting)
+            system_prompt: The system prompt as a string or list of content blocks
 
         Returns:
             Token count for all messages
@@ -61,13 +61,13 @@ class TokenCounter:
         else:
             return self._estimate_tokens(messages, system_prompt)
 
-    async def _count_tokens_api(self, messages: list["Message"], system_prompt: str = "") -> int:
+    async def _count_tokens_api(self, messages: list["Message"], system_prompt: "str | list" = "") -> int:
         """
         Count the exact number of tokens using Anthropic's API.
 
         Args:
             messages: List of Message objects
-            system_prompt: The system prompt (needed for accurate counting)
+            system_prompt: The system prompt as a string or list of content blocks
 
         Returns:
             Exact token count for all messages
@@ -87,7 +87,7 @@ class TokenCounter:
                 }
             chat_turns.append(obj)
 
-        # Use Anthropic's token counting
+        # Use Anthropic's token counting (accepts both string and list of blocks)
         result = await self.client.messages.count_tokens(
             model=self.model,
             system=system_prompt,
@@ -96,21 +96,24 @@ class TokenCounter:
 
         return result.input_tokens
 
-    def _estimate_tokens(self, messages: list["Message"], system_prompt: str = "") -> int:
+    def _estimate_tokens(self, messages: list["Message"], system_prompt: "str | list" = "") -> int:
         """
         Estimate tokens using fast heuristics (no API calls).
 
         Args:
             messages: List of Message objects
-            system_prompt: The system prompt
+            system_prompt: The system prompt as a string or list of content blocks
 
         Returns:
             Estimated token count
         """
         total_tokens = 0
 
-        # Estimate system prompt tokens
-        total_tokens += len(system_prompt) // CHARS_PER_TOKEN
+        # Estimate system prompt tokens (handle both string and list of blocks)
+        if isinstance(system_prompt, list):
+            total_tokens += sum(len(block.get("text", "")) for block in system_prompt) // CHARS_PER_TOKEN
+        else:
+            total_tokens += len(system_prompt) // CHARS_PER_TOKEN
 
         # Estimate message tokens
         for msg in messages:

@@ -20,21 +20,27 @@ def build_json(messages: list[Message], user_profiles: list[UserProfile]) -> tup
     )
 
 
-def make_sys_prompt(guild: discord.Guild, persona: str, channel: discord.abc.Messageable = None) -> str:
-    current_time = time.strftime("%H:%M")
-    current_date = time.strftime("%Y-%m-%d")
+def make_sys_prompt(guild: discord.Guild, persona: str, channel: discord.abc.Messageable = None) -> list[dict]:
+    """Build a system prompt as a list of content blocks for prompt caching.
 
-    prompt = persona.replace("{{BOT_NAME}}", guild.me.display_name)
-    prompt += f"\n\n# Current Context\n\nCurrent date: {current_date}\nCurrent time: {current_time}\n"
+    Returns two blocks:
+    - Static persona (with cache_control) — cached across requests
+    - Dynamic context (date/time/channel) — changes per request, not cached
+    """
+    persona_text = persona.replace("{{BOT_NAME}}", guild.me.display_name)
 
+    context = f"# Current Context\n\nCurrent date: {time.strftime('%Y-%m-%d')}\nCurrent time: {time.strftime('%H:%M')}\n"
     if channel:
         if isinstance(channel, discord.Thread):
             parent_name = channel.parent.name if channel.parent else "unknown"
-            prompt += f"Source channel: thread #{channel.name} in #{parent_name}\n"
+            context += f"Source channel: thread #{channel.name} in #{parent_name}\n"
         elif hasattr(channel, "name"):
-            prompt += f"Source channel: #{channel.name}\n"
+            context += f"Source channel: #{channel.name}\n"
 
-    return prompt
+    return [
+        {"type": "text", "text": persona_text, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": context},
+    ]
 
 
 def make_prompt(msg_str: str, message: discord.Message, user_profs_str: str | None = None) -> str:

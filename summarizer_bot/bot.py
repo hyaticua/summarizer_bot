@@ -190,7 +190,7 @@ class ChatBot(discord.bot.Bot):
     async def build_context_with_token_limit(
         self,
         channel_id: int,
-        sys_prompt: str,
+        sys_prompt: "str | list",
         max_messages: int = 50,
         enable_token_counting: bool = True
     ) -> list[Message]:

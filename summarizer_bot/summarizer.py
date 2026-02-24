@@ -137,9 +137,12 @@ class AnthropicClient:
             text = self._extract_text(response)
             all_file_ids.extend(self._extract_file_ids(response))
 
-            logger.debug("Stream iteration {}: stop_reason={}, tokens_in={}, tokens_out={}",
+            cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            cache_write = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            logger.debug("Stream iteration {}: stop_reason={}, tokens_in={}, tokens_out={}, cache_read={}, cache_write={}",
                          iteration, response.stop_reason,
-                         response.usage.input_tokens, response.usage.output_tokens)
+                         response.usage.input_tokens, response.usage.output_tokens,
+                         cache_read, cache_write)
 
             if response.stop_reason == "pause_turn":
                 # Server-side tool continuation (web search, web fetch, or code execution)
@@ -193,6 +196,9 @@ class AnthropicClient:
         tools = [CODE_EXECUTION_TOOL, WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
         if tool_executor:
             tools.extend(tool_executor.get_available_tools())
+        # Mark last tool for caching — caches all tool definitions as a prefix
+        if tools:
+            tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
 
         async with self.client.beta.messages.stream(
             model=self.model,
@@ -201,6 +207,7 @@ class AnthropicClient:
             tools=tools,
             betas=["files-api-2025-04-14"],
             messages=turns,
+            cache_control={"type": "ephemeral"},  # auto-cache conversation prefix
         ) as stream:
             async for event in stream:
                 if not status_callback:
