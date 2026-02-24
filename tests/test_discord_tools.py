@@ -151,6 +151,7 @@ def make_message(author, content, timestamp=None, attachments=None, reference=No
     msg.content = content
     msg.created_at = timestamp or datetime(2025, 1, 1, 12, 0)
     msg.attachments = attachments or []
+    msg.reactions = []
     msg.reference = reference
     msg.guild = Mock(spec=discord.Guild)
     msg.guild.get_member = Mock(return_value=None)
@@ -202,6 +203,10 @@ class TestStatusForTool:
     def test_timeout_member(self):
         result = _status_for_tool("timeout_member", {"member": "Alice", "duration": "5 minutes"})
         assert result == "Timing out Alice..."
+
+    def test_react_to_message(self):
+        result = _status_for_tool("react_to_message", {"channel_name": "general", "message_id": "123", "emoji": "\U0001f44d"})
+        assert result == "Reacting to a message..."
 
     def test_unknown_tool(self):
         assert _status_for_tool("something_else", {}) == "Using a tool..."
@@ -1372,6 +1377,83 @@ class TestTimeoutMember:
 
 
 # ---------------------------------------------------------------------------
+# Tests: react_to_message
+# ---------------------------------------------------------------------------
+
+
+class TestReactToMessage:
+    @pytest.mark.asyncio
+    async def test_successful_reaction(self):
+        ch = make_text_channel("general")
+        msg = make_message(make_member(1, "Alice"), "hello")
+        msg.add_reaction = AsyncMock()
+        ch.fetch_message = AsyncMock(return_value=msg)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("react_to_message", {
+            "channel_name": "general",
+            "message_id": "12345",
+            "emoji": "\U0001f44d",
+        })
+        assert "Reacted" in result
+        msg.add_reaction.assert_called_once_with("\U0001f44d")
+
+    @pytest.mark.asyncio
+    async def test_message_not_found(self):
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(side_effect=discord.NotFound(MagicMock(), ""))
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("react_to_message", {
+            "channel_name": "general",
+            "message_id": "99999",
+            "emoji": "\U0001f44d",
+        })
+        assert "not found" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_no_permission(self):
+        ch = make_text_channel("general")
+        msg = make_message(make_member(1, "Alice"), "hello")
+        msg.add_reaction = AsyncMock(side_effect=discord.Forbidden(MagicMock(), ""))
+        ch.fetch_message = AsyncMock(return_value=msg)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("react_to_message", {
+            "channel_name": "general",
+            "message_id": "12345",
+            "emoji": "\U0001f44d",
+        })
+        assert "permission" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_channel_not_found(self):
+        guild = make_guild([], [])
+        ex = _executor(guild)
+        result = await ex.execute("react_to_message", {
+            "channel_name": "nonexistent",
+            "message_id": "12345",
+            "emoji": "\U0001f44d",
+        })
+        assert "Could not find" in result
+
+    @pytest.mark.asyncio
+    async def test_dispatches(self):
+        ch = make_text_channel("general")
+        msg = make_message(make_member(1, "Alice"), "hello")
+        msg.add_reaction = AsyncMock()
+        ch.fetch_message = AsyncMock(return_value=msg)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("react_to_message", {
+            "channel_name": "general",
+            "message_id": "12345",
+            "emoji": "\U0001f44d",
+        })
+        assert "Unknown tool" not in result
+
+
+# ---------------------------------------------------------------------------
 # Tests: get_available_tools
 # ---------------------------------------------------------------------------
 
@@ -1388,6 +1470,7 @@ class TestGetAvailableTools:
         assert "read_channel_history" in tool_names
         assert "delete_messages" in tool_names
         assert "timeout_member" in tool_names
+        assert "react_to_message" in tool_names
 
     def test_timeout_excluded_without_permission(self):
         """timeout_member excluded when bot lacks moderate_members."""

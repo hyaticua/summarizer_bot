@@ -375,6 +375,7 @@ class TestFormatMessageText:
         msg.author.display_name = author_name
         msg.reference = reference
         msg.attachments = attachments or []
+        msg.reactions = []
         msg.guild = Mock(spec=discord.Guild)
         msg.guild.get_member = Mock(return_value=None)
         msg.guild.get_channel = Mock(return_value=None)

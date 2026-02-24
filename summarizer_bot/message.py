@@ -110,6 +110,16 @@ def format_message_text(
         filenames = ", ".join(a.filename for a in msg.attachments)
         content += f" [attachments: {filenames}]"
 
+    # Reactions (count-based, sync-safe)
+    if msg.reactions:
+        reaction_parts = []
+        for reaction in msg.reactions:
+            emoji = str(reaction.emoji)
+            if reaction.count > 0:
+                reaction_parts.append(f"{emoji} x{reaction.count}")
+        if reaction_parts:
+            content += f" [reactions: {', '.join(reaction_parts)}]"
+
     return content
 
 
@@ -166,6 +176,7 @@ class Message:
         self.id = msg.id
         self.created_at = msg.created_at
         self.images: list[Image] = []
+        self.reactions: list[tuple[str, list[str]]] = []
         self.from_self = from_self
 
     @classmethod
@@ -175,6 +186,27 @@ class Message:
         for attachment in msg.attachments:
             if "image" in attachment.content_type:
                 obj.images.append(await Image.create(attachment))
+
+        # Fetch detailed reaction data (user names instead of counts)
+        bot_id = msg.guild.me.id if msg.guild else None
+        for reaction in msg.reactions:
+            emoji_str = str(reaction.emoji)
+            try:
+                users_list = await reaction.users().flatten()
+            except Exception:
+                continue
+            names = [u.display_name for u in users_list if not (bot_id and u.id == bot_id)]
+            if names:
+                obj.reactions.append((emoji_str, names))
+
+        # Replace count-based reaction text with user-based format
+        if obj.reactions:
+            bracket_idx = obj.text.rfind(" [reactions:")
+            if bracket_idx != -1:
+                obj.text = obj.text[:bracket_idx]
+            parts = [f"{emoji} {', '.join(names)}" for emoji, names in obj.reactions]
+            obj.text += f" [reactions: {' | '.join(parts)}]"
+
         return obj
     
     def __str__(self) -> str:
@@ -187,6 +219,11 @@ class Message:
             "author" : self.author,
             "content" : self.text,
         }
+        if self.reactions:
+            obj["reactions"] = [
+                {"emoji": emoji, "users": users}
+                for emoji, users in self.reactions
+            ]
         return obj
     
     def to_chat_turns(self) -> list[dict]:

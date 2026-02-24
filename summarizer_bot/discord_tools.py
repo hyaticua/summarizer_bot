@@ -183,6 +183,28 @@ ALL_DISCORD_TOOLS = [
             "required": ["action"]
         }
     },
+    {
+        "name": "react_to_message",
+        "description": "React to a message with an emoji.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_name": {
+                    "type": "string",
+                    "description": "Name of the channel the message is in."
+                },
+                "message_id": {
+                    "type": "string",
+                    "description": "The ID of the message to react to."
+                },
+                "emoji": {
+                    "type": "string",
+                    "description": "Unicode emoji (e.g. '👍') or custom emoji name to react with."
+                }
+            },
+            "required": ["channel_name", "message_id", "emoji"]
+        }
+    },
 ]
 
 # Maps tool names to the guild-level Discord permissions required to expose that tool.
@@ -195,6 +217,7 @@ TOOL_PERMISSIONS = {
     "timeout_member": ["moderate_members"],
     "schedule_message": [],
     "manage_scheduled": [],
+    "react_to_message": [],
 }
 
 
@@ -281,6 +304,8 @@ def _status_for_tool(name: str, tool_input: dict) -> str:
         if action == "cancel":
             return "Cancelling a scheduled task..."
         return "Listing scheduled tasks..."
+    elif name == "react_to_message":
+        return "Reacting to a message..."
     return "Using a tool..."
 
 
@@ -361,6 +386,8 @@ class DiscordToolExecutor:
                 result = await self._schedule_message(tool_input)
             elif name == "manage_scheduled":
                 result = await self._manage_scheduled(tool_input)
+            elif name == "react_to_message":
+                result = await self._react_to_message(tool_input)
             else:
                 result = f"Unknown tool: {name}"
             logger.info(f"Tool result ({name}): {result[:500]}{'...' if len(result) > 500 else ''}")
@@ -792,6 +819,43 @@ class DiscordToolExecutor:
             if not task_id:
                 return "Error: task_id is required for cancel."
             return await scheduler.cancel_task(self.guild.id, task_id)
+
+    async def _react_to_message(self, tool_input: dict) -> str:
+        channel_name = tool_input.get("channel_name")
+        if not channel_name:
+            return "Error: channel_name is required."
+
+        message_id = tool_input.get("message_id")
+        if not message_id:
+            return "Error: message_id is required."
+
+        emoji = tool_input.get("emoji")
+        if not emoji:
+            return "Error: emoji is required."
+
+        channel = self._fuzzy_find_channel(channel_name, channel_types=["text"])
+        if isinstance(channel, str):
+            return channel  # error message
+
+        try:
+            msg = await channel.fetch_message(int(message_id))
+        except discord.NotFound:
+            return f"Message {message_id} not found in #{channel.name}."
+        except (ValueError, TypeError):
+            return f"Invalid message ID: {message_id}"
+        except discord.Forbidden:
+            return f"I don't have permission to read #{channel.name}."
+
+        try:
+            await msg.add_reaction(emoji)
+        except discord.Forbidden:
+            return f"I don't have permission to add reactions in #{channel.name}."
+        except discord.NotFound:
+            return f"Emoji '{emoji}' not found."
+        except discord.HTTPException as e:
+            return f"Failed to react: {e}"
+
+        return f"Reacted with {emoji} to a message in #{channel.name}."
 
     def _no_results_message(self, channel_name: str, tool_input: dict, scanned: int) -> str:
         """Informative message when no messages match the filters."""

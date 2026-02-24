@@ -65,6 +65,7 @@ python -m summarizer_bot.main
 - `Message` class: Represents Discord messages with support for:
   - Text content parsing via `format_message_text()` (mention resolution, reply context)
   - Image attachments (base64-encoded for LLM vision capabilities)
+  - Reaction data: fetched via `Reaction.users()` in `create()`, stored as `list[tuple[str, list[str]]]` (emoji, user names), included in `to_json()` output. Bot's own reactions are skipped.
   - JSON serialization for structured LLM input
   - Distinction between bot's own messages (`from_self`) and user messages
 - `format_message_text()`: Shared formatting function used by both the chat context and Discord tools. Handles:
@@ -72,12 +73,13 @@ python -m summarizer_bot.main
   - Channel mention resolution (`<#123>` → `#channel-name`)
   - Reply-to context (`[replying to Author]` prefix)
   - Optional content truncation and attachment filename listing
+  - Reaction rendering: appends `[reactions: 👍 x3, ❤️ x1]` (count-based) from `msg.reactions`
 - `UserProfile`: Optional user info that can be included in LLM context
 - `parse_response()`: Converts LLM output back to Discord mentions (e.g., `<@username>` → `<@user_id>`)
 
 **discord_tools.py (Discord Tool Use)**
 - Implements Anthropic's client-side tool_use protocol for querying and acting on Discord state
-- `ALL_DISCORD_TOOLS`: Tool definitions in Anthropic API format for five tools:
+- `ALL_DISCORD_TOOLS`: Tool definitions in Anthropic API format:
   - `get_server_members`: List members (all, in voice, or recently active in a channel)
   - `list_channels`: List all channels organized by category with voice occupancy
   - `read_channel_history`: Read recent messages from any channel/thread (max 50, capped at 4000 chars). Supports optional filters:
@@ -92,6 +94,7 @@ python -m summarizer_bot.main
   - `timeout_member`: Temporarily timeout a member. Fuzzy-finds the member, parses a human-readable duration via `_parse_duration()`, guards against bots/self/role hierarchy, calls `member.timeout_for()`
   - `schedule_message`: Schedule a static message or dynamic LLM prompt for future execution. Resolves channel, validates time/limits, delegates to `Scheduler.add_task()`
   - `manage_scheduled`: List or cancel scheduled tasks for the guild. Delegates to `Scheduler.list_tasks()` / `Scheduler.cancel_task()`
+  - `react_to_message`: React to a message with an emoji. Resolves channel via `_fuzzy_find_channel()`, fetches message by ID, calls `message.add_reaction()`. Handles `Forbidden`, `NotFound`, `HTTPException`
 - `TOOL_PERMISSIONS`: Maps tool names to required guild-level Discord permissions. Tools with unmet permissions are excluded from the LLM's tool list at request time
 - `DiscordToolExecutor`: Executes tools against a `discord.Guild`, returns results as strings
   - Constructor accepts `requesting_user` param (display name of the user who triggered the tool) for task attribution
@@ -202,7 +205,7 @@ Current persona is set in `main.py` (currently `personas/mommy.md`).
   - Tools only available in guild contexts (not DMs)
   - Permission-gated: `get_available_tools()` checks the bot's guild permissions and only exposes tools the bot can use (e.g., `timeout_member` requires `moderate_members`)
   - Read tools: `get_server_members`, `list_channels`, `read_channel_history`, `manage_scheduled` (no special permissions)
-  - Write tools: `delete_messages` (own messages always; others' require `manage_messages` per-channel), `timeout_member` (requires `moderate_members` guild permission), `schedule_message` (no special permissions)
+  - Write tools: `delete_messages` (own messages always; others' require `manage_messages` per-channel), `timeout_member` (requires `moderate_members` guild permission), `schedule_message` (no special permissions), `react_to_message` (no special guild permission; per-channel `add_reactions` checked at runtime)
   - Bot does not need `presences` intent; uses voice presence and message activity as proxies
 
 **Scheduled Actions**:
