@@ -215,7 +215,14 @@ class Scheduler:
 
     async def _execute_static(self, channel, task: ScheduledTask):
         """Send a static message to the channel."""
-        await channel.send(task.content)
+        try:
+            from message import parse_response
+        except ImportError:
+            from .message import parse_response
+
+        guild = channel.guild
+        content = parse_response(task.content, guild) if guild else task.content
+        await channel.send(content)
         logger.info("Static task {} executed in #{}", task.id, task.channel_name)
 
     async def _execute_dynamic(self, guild, channel, task: ScheduledTask):
