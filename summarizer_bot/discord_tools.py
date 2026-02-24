@@ -13,7 +13,7 @@ except ImportError:
 SCAN_LIMIT = 500   # Max messages to scan from Discord when filtering
 BATCH_SIZE = 100    # Messages per Discord API call (Discord's max)
 
-DISCORD_TOOLS = [
+ALL_DISCORD_TOOLS = [
     {
         "name": "get_server_members",
         "description": "See who is in the Discord server. Can show all members, members in voice channels, or members recently active in a specific channel.",
@@ -88,8 +88,62 @@ DISCORD_TOOLS = [
             },
             "required": ["channel_name"]
         }
-    }
+    },
+    {
+        "name": "delete_messages",
+        "description": "Delete messages in a channel. Can delete a specific message by ID, or delete your own recent messages by count.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "channel_name": {
+                    "type": "string",
+                    "description": "Name of the channel to delete messages from."
+                },
+                "message_id": {
+                    "type": "string",
+                    "description": "Specific message ID to delete. If omitted, deletes your own recent messages."
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of your own recent messages to delete (default 1, max 5). Only used when message_id is not provided."
+                }
+            },
+            "required": ["channel_name"]
+        }
+    },
+    {
+        "name": "timeout_member",
+        "description": "Temporarily timeout a server member, preventing them from sending messages or joining voice channels for the specified duration.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "member": {
+                    "type": "string",
+                    "description": "Name of the member to timeout. Fuzzy-matched by display name, nickname, or username."
+                },
+                "duration": {
+                    "type": "string",
+                    "description": "How long to timeout the member. Examples: '5 minutes', '1 hour', '30 seconds', '1 day'."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Reason for the timeout, shown in the Discord audit log."
+                }
+            },
+            "required": ["member", "duration"]
+        }
+    },
 ]
+
+# Maps tool names to the guild-level Discord permissions required to expose that tool.
+# Empty list means no special permission needed (available by default).
+TOOL_PERMISSIONS = {
+    "get_server_members": [],
+    "list_channels": [],
+    "read_channel_history": [],
+    "delete_messages": [],               # bot can always delete own; manage_messages checked per-message
+    "timeout_member": ["moderate_members"],
+}
 
 
 def _parse_time_expression(expr: str) -> datetime | None:
@@ -158,6 +212,14 @@ def _status_for_tool(name: str, tool_input: dict) -> str:
         if filters:
             return f"Searching #{channel} for {filters}..."
         return f"Reading messages from #{channel}..."
+    elif name == "delete_messages":
+        channel = tool_input.get("channel_name", "unknown")
+        if tool_input.get("message_id"):
+            return "Deleting a message..."
+        return f"Deleting messages in #{channel}..."
+    elif name == "timeout_member":
+        member = tool_input.get("member", "someone")
+        return f"Timing out {member}..."
     return "Using a tool..."
 
 
@@ -182,10 +244,42 @@ def _describe_active_filters(tool_input: dict) -> str:
     return ", ".join(parts)
 
 
+def _parse_duration(expr: str) -> timedelta | None:
+    """Parse a human-readable duration string into a timedelta.
+
+    Supports "N unit(s)" patterns like "5 minutes", "1 hour", "30 seconds", "2 days".
+    Returns None if the expression cannot be parsed.
+    """
+    expr = expr.strip().lower()
+    match = re.match(r"(\d+)\s+(second|minute|hour|day|week)s?$", expr)
+    if not match:
+        return None
+    amount = int(match.group(1))
+    unit = match.group(2)
+    unit_map = {
+        "second": timedelta(seconds=1),
+        "minute": timedelta(minutes=1),
+        "hour": timedelta(hours=1),
+        "day": timedelta(days=1),
+        "week": timedelta(weeks=1),
+    }
+    return unit_map[unit] * amount
+
+
 class DiscordToolExecutor:
     def __init__(self, guild: discord.Guild, bot: discord.Bot):
         self.guild = guild
         self.bot = bot
+
+    def get_available_tools(self) -> list[dict]:
+        """Return tool definitions filtered by the bot's guild permissions."""
+        perms = self.guild.me.guild_permissions
+        available = []
+        for tool in ALL_DISCORD_TOOLS:
+            required = TOOL_PERMISSIONS.get(tool["name"], [])
+            if all(getattr(perms, perm, False) for perm in required):
+                available.append(tool)
+        return available
 
     async def execute(self, name: str, tool_input: dict) -> str:
         """Execute a tool by name and return the result as a string."""
@@ -197,6 +291,10 @@ class DiscordToolExecutor:
                 result = await self._list_channels(tool_input)
             elif name == "read_channel_history":
                 result = await self._read_channel_history(tool_input)
+            elif name == "delete_messages":
+                result = await self._delete_messages(tool_input)
+            elif name == "timeout_member":
+                result = await self._timeout_member(tool_input)
             else:
                 result = f"Unknown tool: {name}"
             logger.info(f"Tool result ({name}): {result[:500]}{'...' if len(result) > 500 else ''}")
@@ -474,6 +572,102 @@ class DiscordToolExecutor:
         header += f" — {len(messages)} match{'es' if len(messages) != 1 else ''}, {scanned} scanned:"
 
         return header + "\n" + "\n".join(lines)
+
+    async def _delete_messages(self, tool_input: dict) -> str:
+        channel_name = tool_input.get("channel_name")
+        if not channel_name:
+            return "Error: channel_name is required."
+
+        channel = self._fuzzy_find_channel(channel_name, channel_types=["text"])
+        if isinstance(channel, str):
+            return channel  # error message
+
+        message_id = tool_input.get("message_id")
+
+        if message_id:
+            # Delete a specific message by ID
+            try:
+                msg = await channel.fetch_message(int(message_id))
+            except discord.NotFound:
+                return f"Message {message_id} not found in #{channel.name}."
+            except (ValueError, TypeError):
+                return f"Invalid message ID: {message_id}"
+            except discord.Forbidden:
+                return f"I don't have permission to read #{channel.name}."
+
+            if msg.author.id == self.guild.me.id:
+                # Own message — always allowed
+                await msg.delete()
+                return f"Deleted my message in #{channel.name}."
+            else:
+                # Someone else's message — need manage_messages
+                perms = channel.permissions_for(self.guild.me)
+                if not perms.manage_messages:
+                    return f"I don't have permission to delete other users' messages in #{channel.name}."
+                await msg.delete()
+                return f"Deleted a message by {msg.author.display_name} in #{channel.name}."
+        else:
+            # Delete the bot's own recent messages by count
+            count = min(tool_input.get("count", 1), 5)
+            if count < 1:
+                return "Error: count must be at least 1."
+
+            try:
+                messages = await channel.history(limit=50).flatten()
+            except discord.Forbidden:
+                return f"I don't have permission to read #{channel.name}."
+
+            own_msgs = [m for m in messages if m.author.id == self.guild.me.id]
+            to_delete = own_msgs[:count]
+
+            if not to_delete:
+                return f"No recent messages from me found in #{channel.name}."
+
+            for msg in to_delete:
+                await msg.delete()
+
+            return f"Deleted {len(to_delete)} of my message{'s' if len(to_delete) != 1 else ''} in #{channel.name}."
+
+    async def _timeout_member(self, tool_input: dict) -> str:
+        member_name = tool_input.get("member")
+        if not member_name:
+            return "Error: member is required."
+
+        duration_str = tool_input.get("duration")
+        if not duration_str:
+            return "Error: duration is required."
+
+        # Find the member
+        member = attempt_to_find_member(member_name, self.guild)
+        if member is None:
+            return f"Could not find a member matching '{member_name}' in this server."
+
+        # Parse the duration
+        duration = _parse_duration(duration_str)
+        if duration is None:
+            return f"Could not parse duration: '{duration_str}'. Try '5 minutes', '1 hour', or '1 day'."
+
+        # Guard: can't timeout bots
+        if member.bot:
+            return f"{member.display_name} is a bot and cannot be timed out."
+
+        # Guard: can't timeout yourself
+        if member.id == self.guild.me.id:
+            return "I can't timeout myself."
+
+        # Guard: role hierarchy — bot's top role must be higher than the target's
+        if self.guild.me.top_role <= member.top_role:
+            return f"I can't timeout {member.display_name} because their role is equal to or higher than mine."
+
+        reason = tool_input.get("reason")
+        try:
+            await member.timeout_for(duration=duration, reason=reason)
+        except discord.Forbidden:
+            return f"I don't have permission to timeout {member.display_name}."
+
+        duration_desc = duration_str.strip()
+        reason_desc = f" Reason: {reason}" if reason else ""
+        return f"Timed out {member.display_name} for {duration_desc}.{reason_desc}"
 
     def _no_results_message(self, channel_name: str, tool_input: dict, scanned: int) -> str:
         """Informative message when no messages match the filters."""

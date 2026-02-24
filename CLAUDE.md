@@ -76,8 +76,8 @@ python -m summarizer_bot.main
 - `parse_response()`: Converts LLM output back to Discord mentions (e.g., `<@username>` → `<@user_id>`)
 
 **discord_tools.py (Discord Tool Use)**
-- Implements Anthropic's client-side tool_use protocol for querying Discord state
-- `DISCORD_TOOLS`: Tool definitions in Anthropic API format for three tools:
+- Implements Anthropic's client-side tool_use protocol for querying and acting on Discord state
+- `ALL_DISCORD_TOOLS`: Tool definitions in Anthropic API format for five tools:
   - `get_server_members`: List members (all, in voice, or recently active in a channel)
   - `list_channels`: List all channels organized by category with voice occupancy
   - `read_channel_history`: Read recent messages from any channel/thread (max 50, capped at 4000 chars). Supports optional filters:
@@ -88,9 +88,14 @@ python -m summarizer_bot.main
     - `exclude_bots`: Skip bot messages
     - All filters combine with AND logic; when active, up to `SCAN_LIMIT=500` messages are scanned in batches of `BATCH_SIZE=100`
     - `before`/`after` are passed to `channel.history()` for server-side filtering; other filters applied client-side
+  - `delete_messages`: Delete messages in a channel. By specific message ID (own messages always allowed; others' require `manage_messages`), or by count to delete the bot's own recent messages (max 5, no special permission needed)
+  - `timeout_member`: Temporarily timeout a member. Fuzzy-finds the member, parses a human-readable duration via `_parse_duration()`, guards against bots/self/role hierarchy, calls `member.timeout_for()`
+- `TOOL_PERMISSIONS`: Maps tool names to required guild-level Discord permissions. Tools with unmet permissions are excluded from the LLM's tool list at request time
 - `DiscordToolExecutor`: Executes tools against a `discord.Guild`, returns results as strings
+  - `get_available_tools()`: Filters `ALL_DISCORD_TOOLS` by the bot's guild permissions, only exposing tools the bot can actually use
 - `_fuzzy_find_channel()`: Channel name resolution (exact → case-insensitive → substring match)
-- `_status_for_tool()`: Returns user-facing status strings per tool invocation; shows filter details when active (e.g., "Searching #general for messages from Alice containing 'bug'...")
+- `_parse_duration()`: Parses "N unit(s)" strings (e.g., "5 minutes", "1 hour") into `timedelta`
+- `_status_for_tool()`: Returns user-facing status strings per tool invocation; shows filter details when active (e.g., "Searching #general for messages from Alice containing 'bug'...", "Deleting messages in #general...", "Timing out Alice...")
 - Errors are returned as descriptive strings to the LLM, not raised
 - Tools are only offered in guild contexts (not DMs)
 - Tool output uses `format_message_text()` from `message.py` for consistent message formatting with the chat context
@@ -157,6 +162,9 @@ Current persona is set in `main.py` (currently `personas/mommy.md`).
 - Discord tools: Client-side tools defined in `discord_tools.py`, triggered by `tool_use` stop reason
   - LLM requests a tool → bot executes it → result returned to LLM → LLM continues
   - Tools only available in guild contexts (not DMs)
+  - Permission-gated: `get_available_tools()` checks the bot's guild permissions and only exposes tools the bot can use (e.g., `timeout_member` requires `moderate_members`)
+  - Read tools: `get_server_members`, `list_channels`, `read_channel_history` (no special permissions)
+  - Write tools: `delete_messages` (own messages always; others' require `manage_messages` per-channel), `timeout_member` (requires `moderate_members` guild permission)
   - Bot does not need `presences` intent; uses voice presence and message activity as proxies
 
 **Message Format for LLM**:

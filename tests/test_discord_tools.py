@@ -7,8 +7,12 @@ Tests cover:
 - _format_channel(): channel display formatting
 - DiscordToolExecutor: get_server_members, list_channels, read_channel_history, dispatch
 - _parse_time_expression(): time expression parsing
+- _parse_duration(): duration parsing
 - _matches_filters(): message filter logic
 - Filtered read_channel_history integration
+- delete_messages: own and others' message deletion
+- timeout_member: timeout with guards and error handling
+- get_available_tools(): permission-based tool filtering
 """
 
 import pytest
@@ -20,7 +24,10 @@ import discord
 from summarizer_bot.discord_tools import (
     _status_for_tool,
     _parse_time_expression,
+    _parse_duration,
     _describe_active_filters,
+    ALL_DISCORD_TOOLS,
+    TOOL_PERMISSIONS,
     DiscordToolExecutor,
 )
 
@@ -97,7 +104,7 @@ def make_category(name, channels):
     return cat
 
 
-def make_guild(members, channels, categories=None, threads=None):
+def make_guild(members, channels, categories=None, threads=None, guild_permissions=None):
     """Assemble a mock discord.Guild."""
     g = Mock(spec=discord.Guild)
     g.members = members
@@ -111,7 +118,22 @@ def make_guild(members, channels, categories=None, threads=None):
     g.stage_channels = [
         ch for ch in channels if isinstance(ch, discord.StageChannel)
     ]
-    g.me = make_member(0, "TestBot", bot=True)
+    bot_member = make_member(0, "TestBot", bot=True)
+    # Configure guild permissions on the bot member
+    perms = Mock(spec=discord.Permissions)
+    # Default all permissions to False, then set provided ones
+    perms.configure_mock(**{p: False for p in [
+        "moderate_members", "manage_messages", "administrator",
+    ]})
+    if guild_permissions:
+        perms.configure_mock(**guild_permissions)
+    bot_member.guild_permissions = perms
+    bot_member.top_role = Mock()
+    bot_member.top_role.__gt__ = lambda self, other: True
+    bot_member.top_role.__ge__ = lambda self, other: True
+    bot_member.top_role.__le__ = lambda self, other: False
+    bot_member.top_role.__lt__ = lambda self, other: False
+    g.me = bot_member
     return g
 
 
@@ -168,6 +190,18 @@ class TestStatusForTool:
     def test_read_channel_history(self):
         result = _status_for_tool("read_channel_history", {"channel_name": "dev"})
         assert result == "Reading messages from #dev..."
+
+    def test_delete_messages_by_id(self):
+        result = _status_for_tool("delete_messages", {"channel_name": "general", "message_id": "123"})
+        assert result == "Deleting a message..."
+
+    def test_delete_messages_by_count(self):
+        result = _status_for_tool("delete_messages", {"channel_name": "general"})
+        assert result == "Deleting messages in #general..."
+
+    def test_timeout_member(self):
+        result = _status_for_tool("timeout_member", {"member": "Alice", "duration": "5 minutes"})
+        assert result == "Timing out Alice..."
 
     def test_unknown_tool(self):
         assert _status_for_tool("something_else", {}) == "Using a tool..."
@@ -474,7 +508,7 @@ class TestReadChannelHistory:
 class TestExecuteDispatch:
     @pytest.mark.asyncio
     async def test_routes_to_correct_handler(self):
-        """All three tool names dispatch without error."""
+        """All tool names dispatch without error."""
         ch = make_text_channel("general", messages=[])
         guild = make_guild([make_member(1, "Alice")], [ch])
         ex = _executor(guild)
@@ -484,6 +518,23 @@ class TestExecuteDispatch:
 
         r2 = await ex.execute("list_channels", {})
         assert "Unknown tool" not in r2 and "Error" not in r2
+
+    @pytest.mark.asyncio
+    async def test_delete_messages_dispatches(self):
+        ch = make_text_channel("general", messages=[])
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {"channel_name": "general"})
+        # Should not be "Unknown tool"
+        assert "Unknown tool" not in result
+
+    @pytest.mark.asyncio
+    async def test_timeout_member_dispatches(self):
+        guild = make_guild([], [])
+        ex = _executor(guild)
+        result = await ex.execute("timeout_member", {"member": "Nobody", "duration": "5 minutes"})
+        # Should not be "Unknown tool" — will be a "Could not find" error
+        assert "Unknown tool" not in result
 
     @pytest.mark.asyncio
     async def test_unknown_tool(self):
@@ -977,6 +1028,386 @@ class TestFilteredReadChannelHistory:
         })
         assert "scanned" in result
         assert "match" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: _parse_duration
+# ---------------------------------------------------------------------------
+
+
+class TestParseDuration:
+    def test_minutes(self):
+        result = _parse_duration("5 minutes")
+        assert result == timedelta(minutes=5)
+
+    def test_singular(self):
+        result = _parse_duration("1 hour")
+        assert result == timedelta(hours=1)
+
+    def test_seconds(self):
+        result = _parse_duration("30 seconds")
+        assert result == timedelta(seconds=30)
+
+    def test_days(self):
+        result = _parse_duration("2 days")
+        assert result == timedelta(days=2)
+
+    def test_weeks(self):
+        result = _parse_duration("1 week")
+        assert result == timedelta(weeks=1)
+
+    def test_invalid(self):
+        assert _parse_duration("not a duration") is None
+        assert _parse_duration("") is None
+        assert _parse_duration("5 months") is None  # months not supported
+        assert _parse_duration("forever") is None
+
+    def test_whitespace_stripped(self):
+        result = _parse_duration("  5 minutes  ")
+        assert result == timedelta(minutes=5)
+
+
+# ---------------------------------------------------------------------------
+# Tests: delete_messages
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteMessages:
+    @pytest.mark.asyncio
+    async def test_delete_own_by_count(self):
+        """Delete bot's own recent messages by count."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        alice = make_member(1, "Alice")
+        msgs = [
+            make_message(bot_member, "bot msg 1", datetime(2025, 1, 1, 12, 0)),
+            make_message(alice, "alice msg", datetime(2025, 1, 1, 12, 1)),
+            make_message(bot_member, "bot msg 2", datetime(2025, 1, 1, 12, 2)),
+        ]
+        for msg in msgs:
+            msg.delete = AsyncMock()
+        ch = make_text_channel("general", messages=msgs)
+        guild = make_guild([bot_member, alice], [ch])
+        # Set guild.me.id to match bot_member
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {"channel_name": "general", "count": 2})
+        assert "Deleted 2" in result
+        assert "my message" in result
+
+    @pytest.mark.asyncio
+    async def test_delete_own_default_count(self):
+        """Default count is 1."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        msg = make_message(bot_member, "bot msg", datetime(2025, 1, 1, 12, 0))
+        msg.delete = AsyncMock()
+        ch = make_text_channel("general", messages=[msg])
+        guild = make_guild([bot_member], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {"channel_name": "general"})
+        assert "Deleted 1" in result
+
+    @pytest.mark.asyncio
+    async def test_delete_no_own_messages(self):
+        """No bot messages found in channel."""
+        alice = make_member(1, "Alice")
+        msg = make_message(alice, "alice msg", datetime(2025, 1, 1, 12, 0))
+        ch = make_text_channel("general", messages=[msg])
+        guild = make_guild([alice], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {"channel_name": "general"})
+        assert "No recent messages from me" in result
+
+    @pytest.mark.asyncio
+    async def test_delete_specific_own_message(self):
+        """Delete a specific message by ID that belongs to the bot."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        msg = make_message(bot_member, "bot msg", datetime(2025, 1, 1, 12, 0))
+        msg.delete = AsyncMock()
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(return_value=msg)
+        guild = make_guild([bot_member], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {"channel_name": "general", "message_id": "12345"})
+        assert "Deleted my message" in result
+        msg.delete.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_other_message_with_permission(self):
+        """Delete another user's message when bot has manage_messages."""
+        alice = make_member(1, "Alice")
+        msg = make_message(alice, "alice msg", datetime(2025, 1, 1, 12, 0))
+        msg.delete = AsyncMock()
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(return_value=msg)
+        # Set up permissions to allow manage_messages
+        perms = Mock()
+        perms.manage_messages = True
+        ch.permissions_for = Mock(return_value=perms)
+        guild = make_guild([alice], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {"channel_name": "general", "message_id": "12345"})
+        assert "Deleted a message by Alice" in result
+        msg.delete.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_other_message_without_permission(self):
+        """Fail to delete another user's message without manage_messages."""
+        alice = make_member(1, "Alice")
+        msg = make_message(alice, "alice msg", datetime(2025, 1, 1, 12, 0))
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(return_value=msg)
+        perms = Mock()
+        perms.manage_messages = False
+        ch.permissions_for = Mock(return_value=perms)
+        guild = make_guild([alice], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {"channel_name": "general", "message_id": "12345"})
+        assert "permission" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_message_not_found(self):
+        """Message ID doesn't exist."""
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(side_effect=discord.NotFound(MagicMock(), ""))
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {"channel_name": "general", "message_id": "99999"})
+        assert "not found" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_delete_channel_not_found(self):
+        """Channel doesn't exist."""
+        guild = make_guild([], [])
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {"channel_name": "nonexistent"})
+        assert "Could not find" in result
+
+    @pytest.mark.asyncio
+    async def test_delete_count_capped_at_5(self):
+        """Count is capped at 5 even if higher requested."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        msgs = [
+            make_message(bot_member, f"msg {i}", datetime(2025, 1, 1, 12, i))
+            for i in range(10)
+        ]
+        for msg in msgs:
+            msg.delete = AsyncMock()
+        ch = make_text_channel("general", messages=msgs)
+        guild = make_guild([bot_member], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {"channel_name": "general", "count": 20})
+        assert "Deleted 5" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: timeout_member
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutMember:
+    @pytest.mark.asyncio
+    async def test_successful_timeout(self):
+        alice = make_member(1, "Alice", bot=False)
+        alice.name = "alice"
+        alice.nick = None
+        alice.global_name = None
+        alice.top_role = Mock()
+        alice.top_role.__lt__ = lambda self, other: True
+        alice.top_role.__le__ = lambda self, other: True
+        alice.top_role.__gt__ = lambda self, other: False
+        alice.top_role.__ge__ = lambda self, other: False
+        alice.timeout_for = AsyncMock()
+
+        guild = make_guild([alice], [], guild_permissions={"moderate_members": True})
+        ex = _executor(guild)
+        result = await ex.execute("timeout_member", {
+            "member": "Alice",
+            "duration": "5 minutes",
+            "reason": "being silly",
+        })
+        assert "Timed out Alice" in result
+        assert "5 minutes" in result
+        assert "being silly" in result
+        alice.timeout_for.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_timeout_without_reason(self):
+        alice = make_member(1, "Alice", bot=False)
+        alice.name = "alice"
+        alice.nick = None
+        alice.global_name = None
+        alice.top_role = Mock()
+        alice.top_role.__lt__ = lambda self, other: True
+        alice.top_role.__le__ = lambda self, other: True
+        alice.top_role.__gt__ = lambda self, other: False
+        alice.top_role.__ge__ = lambda self, other: False
+        alice.timeout_for = AsyncMock()
+
+        guild = make_guild([alice], [])
+        ex = _executor(guild)
+        result = await ex.execute("timeout_member", {
+            "member": "Alice",
+            "duration": "1 hour",
+        })
+        assert "Timed out Alice" in result
+        assert "1 hour" in result
+        # No reason suffix
+        assert "Reason:" not in result
+
+    @pytest.mark.asyncio
+    async def test_timeout_member_not_found(self):
+        guild = make_guild([], [])
+        ex = _executor(guild)
+        result = await ex.execute("timeout_member", {
+            "member": "Nobody",
+            "duration": "5 minutes",
+        })
+        assert "Could not find" in result
+
+    @pytest.mark.asyncio
+    async def test_timeout_bot(self):
+        bot_user = make_member(1, "MusicBot", bot=True)
+        bot_user.name = "musicbot"
+        bot_user.nick = None
+        bot_user.global_name = None
+
+        guild = make_guild([bot_user], [])
+        ex = _executor(guild)
+        result = await ex.execute("timeout_member", {
+            "member": "MusicBot",
+            "duration": "5 minutes",
+        })
+        assert "bot" in result.lower()
+        assert "cannot be timed out" in result
+
+    @pytest.mark.asyncio
+    async def test_timeout_self(self):
+        """Bot cannot timeout itself."""
+        # Add the bot as a findable member
+        bot_member = make_member(0, "TestBot", bot=True)
+        bot_member.name = "testbot"
+        bot_member.nick = None
+        bot_member.global_name = None
+
+        guild = make_guild([bot_member], [])
+        # The bot's own id and the found member's id match
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("timeout_member", {
+            "member": "TestBot",
+            "duration": "5 minutes",
+        })
+        # Will hit the "bot" guard first since TestBot is a bot
+        assert "bot" in result.lower() or "myself" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_timeout_invalid_duration(self):
+        alice = make_member(1, "Alice", bot=False)
+        alice.name = "alice"
+        alice.nick = None
+        alice.global_name = None
+
+        guild = make_guild([alice], [])
+        ex = _executor(guild)
+        result = await ex.execute("timeout_member", {
+            "member": "Alice",
+            "duration": "forever",
+        })
+        assert "Could not parse duration" in result
+
+    @pytest.mark.asyncio
+    async def test_timeout_role_hierarchy(self):
+        """Can't timeout someone with equal or higher role."""
+        alice = make_member(1, "Alice", bot=False)
+        alice.name = "alice"
+        alice.nick = None
+        alice.global_name = None
+        alice.top_role = Mock()
+        # Alice's role is higher than bot's
+        alice.top_role.__gt__ = lambda self, other: True
+        alice.top_role.__ge__ = lambda self, other: True
+        alice.top_role.__lt__ = lambda self, other: False
+        alice.top_role.__le__ = lambda self, other: False
+
+        guild = make_guild([alice], [])
+        # Make bot's top_role lower
+        guild.me.top_role.__gt__ = lambda self, other: False
+        guild.me.top_role.__ge__ = lambda self, other: False
+        guild.me.top_role.__le__ = lambda self, other: True
+        guild.me.top_role.__lt__ = lambda self, other: True
+        ex = _executor(guild)
+        result = await ex.execute("timeout_member", {
+            "member": "Alice",
+            "duration": "5 minutes",
+        })
+        assert "role" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_timeout_forbidden(self):
+        """Discord returns Forbidden."""
+        alice = make_member(1, "Alice", bot=False)
+        alice.name = "alice"
+        alice.nick = None
+        alice.global_name = None
+        alice.top_role = Mock()
+        alice.top_role.__lt__ = lambda self, other: True
+        alice.top_role.__le__ = lambda self, other: True
+        alice.top_role.__gt__ = lambda self, other: False
+        alice.top_role.__ge__ = lambda self, other: False
+        alice.timeout_for = AsyncMock(side_effect=discord.Forbidden(MagicMock(), ""))
+
+        guild = make_guild([alice], [])
+        ex = _executor(guild)
+        result = await ex.execute("timeout_member", {
+            "member": "Alice",
+            "duration": "5 minutes",
+        })
+        assert "permission" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_available_tools
+# ---------------------------------------------------------------------------
+
+
+class TestGetAvailableTools:
+    def test_all_tools_when_all_permissions(self):
+        """All tools available when bot has all permissions."""
+        guild = make_guild([], [], guild_permissions={"moderate_members": True})
+        ex = _executor(guild)
+        tools = ex.get_available_tools()
+        tool_names = [t["name"] for t in tools]
+        assert "get_server_members" in tool_names
+        assert "list_channels" in tool_names
+        assert "read_channel_history" in tool_names
+        assert "delete_messages" in tool_names
+        assert "timeout_member" in tool_names
+
+    def test_timeout_excluded_without_permission(self):
+        """timeout_member excluded when bot lacks moderate_members."""
+        guild = make_guild([], [], guild_permissions={"moderate_members": False})
+        ex = _executor(guild)
+        tools = ex.get_available_tools()
+        tool_names = [t["name"] for t in tools]
+        assert "timeout_member" not in tool_names
+        # Other tools still present
+        assert "get_server_members" in tool_names
+        assert "delete_messages" in tool_names
+
+    def test_default_permissions_exclude_timeout(self):
+        """Default guild (no explicit perms) excludes timeout."""
+        guild = make_guild([], [])
+        ex = _executor(guild)
+        tools = ex.get_available_tools()
+        tool_names = [t["name"] for t in tools]
+        assert "timeout_member" not in tool_names
+        assert len(tool_names) == len(ALL_DISCORD_TOOLS) - 1
 
 
 if __name__ == "__main__":

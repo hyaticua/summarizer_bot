@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from message import Message
-from discord_tools import DISCORD_TOOLS, _status_for_tool
+from discord_tools import _status_for_tool
 from loguru import logger
 
 @dataclass
@@ -192,7 +192,7 @@ class AnthropicClient:
 
         tools = [CODE_EXECUTION_TOOL, WEB_SEARCH_TOOL, WEB_FETCH_TOOL]
         if tool_executor:
-            tools.extend(DISCORD_TOOLS)
+            tools.extend(tool_executor.get_available_tools())
 
         async with self.client.beta.messages.stream(
             model=self.model,
