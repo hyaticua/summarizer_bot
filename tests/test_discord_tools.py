@@ -26,6 +26,7 @@ from summarizer_bot.discord_tools import (
     _parse_time_expression,
     _parse_duration,
     _describe_active_filters,
+    _format_batch_results,
     ALL_DISCORD_TOOLS,
     TOOL_PERMISSIONS,
     DiscordToolExecutor,
@@ -1491,6 +1492,426 @@ class TestGetAvailableTools:
         tool_names = [t["name"] for t in tools]
         assert "timeout_member" not in tool_names
         assert len(tool_names) == len(ALL_DISCORD_TOOLS) - 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: _format_batch_results
+# ---------------------------------------------------------------------------
+
+
+class TestFormatBatchResults:
+    def test_single_item_returns_plain_message(self):
+        results = [(True, "Reacted with 👍 to a message in #general")]
+        assert _format_batch_results(results, "Reacted") == "Reacted with 👍 to a message in #general"
+
+    def test_single_failure_returns_plain_message(self):
+        results = [(False, "message not found")]
+        assert _format_batch_results(results, "Reacted") == "message not found"
+
+    def test_all_success(self):
+        results = [
+            (True, "Reacted with 👍 in #general"),
+            (True, "Reacted with ❤️ in #general"),
+        ]
+        output = _format_batch_results(results, "Reacted")
+        assert "Reacted 2/2:" in output
+        assert "OK: Reacted with 👍" in output
+        assert "OK: Reacted with ❤️" in output
+        assert "FAILED" not in output
+
+    def test_all_failure(self):
+        results = [
+            (False, "not found"),
+            (False, "no permission"),
+        ]
+        output = _format_batch_results(results, "Deleted")
+        assert "Deleted 0/2:" in output
+        assert "FAILED: not found" in output
+        assert "FAILED: no permission" in output
+        assert "OK:" not in output
+
+    def test_mixed_results(self):
+        results = [
+            (True, "done 1"),
+            (False, "failed 2"),
+            (True, "done 3"),
+        ]
+        output = _format_batch_results(results, "Reacted")
+        assert "Reacted 2/3:" in output
+        assert "OK: done 1" in output
+        assert "OK: done 3" in output
+        assert "FAILED: failed 2" in output
+
+
+# ---------------------------------------------------------------------------
+# Tests: Batch react_to_message
+# ---------------------------------------------------------------------------
+
+
+class TestBatchReactToMessage:
+    @pytest.mark.asyncio
+    async def test_batch_same_channel(self):
+        """Multiple reactions in the same channel."""
+        ch = make_text_channel("general")
+        msg1 = make_message(make_member(1, "Alice"), "hello")
+        msg1.add_reaction = AsyncMock()
+        msg2 = make_message(make_member(2, "Bob"), "world")
+        msg2.add_reaction = AsyncMock()
+
+        async def fetch_message(mid):
+            return {111: msg1, 222: msg2}[mid]
+
+        ch.fetch_message = AsyncMock(side_effect=fetch_message)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("react_to_message", {
+            "channel_name": "general",
+            "reactions": [
+                {"message_id": "111", "emoji": "👍"},
+                {"message_id": "222", "emoji": "❤️"},
+            ],
+        })
+        assert "Reacted 2/2:" in result
+        msg1.add_reaction.assert_called_once_with("👍")
+        msg2.add_reaction.assert_called_once_with("❤️")
+
+    @pytest.mark.asyncio
+    async def test_batch_cross_channel(self):
+        """Reactions across different channels."""
+        ch1 = make_text_channel("general")
+        ch2 = make_text_channel("random")
+        msg1 = make_message(make_member(1, "Alice"), "hello")
+        msg1.add_reaction = AsyncMock()
+        msg2 = make_message(make_member(2, "Bob"), "world")
+        msg2.add_reaction = AsyncMock()
+        ch1.fetch_message = AsyncMock(return_value=msg1)
+        ch2.fetch_message = AsyncMock(return_value=msg2)
+        guild = make_guild([], [ch1, ch2])
+        ex = _executor(guild)
+        result = await ex.execute("react_to_message", {
+            "channel_name": "general",
+            "reactions": [
+                {"message_id": "111", "emoji": "👍"},
+                {"channel_name": "random", "message_id": "222", "emoji": "❤️"},
+            ],
+        })
+        assert "Reacted 2/2:" in result
+        ch1.fetch_message.assert_called_once_with(111)
+        ch2.fetch_message.assert_called_once_with(222)
+
+    @pytest.mark.asyncio
+    async def test_batch_partial_failure(self):
+        """Some reactions succeed, some fail."""
+        ch = make_text_channel("general")
+        msg1 = make_message(make_member(1, "Alice"), "hello")
+        msg1.add_reaction = AsyncMock()
+
+        async def fetch_message(mid):
+            if mid == 111:
+                return msg1
+            raise discord.NotFound(MagicMock(), "")
+
+        ch.fetch_message = AsyncMock(side_effect=fetch_message)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("react_to_message", {
+            "channel_name": "general",
+            "reactions": [
+                {"message_id": "111", "emoji": "👍"},
+                {"message_id": "999", "emoji": "❤️"},
+            ],
+        })
+        assert "Reacted 1/2:" in result
+        assert "OK:" in result
+        assert "FAILED:" in result
+
+    @pytest.mark.asyncio
+    async def test_batch_default_channel_inheritance(self):
+        """Batch items without channel_name inherit the top-level default."""
+        ch = make_text_channel("general")
+        msg = make_message(make_member(1, "Alice"), "hello")
+        msg.add_reaction = AsyncMock()
+        ch.fetch_message = AsyncMock(return_value=msg)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("react_to_message", {
+            "channel_name": "general",
+            "reactions": [
+                {"message_id": "111", "emoji": "👍"},  # no channel_name
+            ],
+        })
+        # Single item returns plain message
+        assert "Reacted" in result
+        ch.fetch_message.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
+    async def test_single_form_backward_compat(self):
+        """Old single-react form still works."""
+        ch = make_text_channel("general")
+        msg = make_message(make_member(1, "Alice"), "hello")
+        msg.add_reaction = AsyncMock()
+        ch.fetch_message = AsyncMock(return_value=msg)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        result = await ex.execute("react_to_message", {
+            "channel_name": "general",
+            "message_id": "12345",
+            "emoji": "👍",
+        })
+        assert "Reacted" in result
+        msg.add_reaction.assert_called_once_with("👍")
+
+    @pytest.mark.asyncio
+    async def test_batch_capped_at_20(self):
+        """Batch is capped at 20 items."""
+        ch = make_text_channel("general")
+        msg = make_message(make_member(1, "Alice"), "hello")
+        msg.add_reaction = AsyncMock()
+        ch.fetch_message = AsyncMock(return_value=msg)
+        guild = make_guild([], [ch])
+        ex = _executor(guild)
+        reactions = [{"message_id": str(i), "emoji": "👍"} for i in range(25)]
+        result = await ex.execute("react_to_message", {
+            "channel_name": "general",
+            "reactions": reactions,
+        })
+        # Should only process 20
+        assert ch.fetch_message.call_count == 20
+
+
+# ---------------------------------------------------------------------------
+# Tests: Batch delete_messages
+# ---------------------------------------------------------------------------
+
+
+class TestBatchDeleteMessages:
+    @pytest.mark.asyncio
+    async def test_batch_multiple_ids(self):
+        """Delete multiple messages by IDs."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        msg1 = make_message(bot_member, "msg 1")
+        msg1.delete = AsyncMock()
+        msg2 = make_message(bot_member, "msg 2")
+        msg2.delete = AsyncMock()
+
+        async def fetch_message(mid):
+            return {111: msg1, 222: msg2}[mid]
+
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(side_effect=fetch_message)
+        guild = make_guild([bot_member], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {
+            "channel_name": "general",
+            "message_ids": ["111", "222"],
+        })
+        assert "Deleted 2/2:" in result
+        msg1.delete.assert_called_once()
+        msg2.delete.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_batch_partial_failure(self):
+        """Some deletes succeed, some fail."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        msg1 = make_message(bot_member, "msg 1")
+        msg1.delete = AsyncMock()
+
+        async def fetch_message(mid):
+            if mid == 111:
+                return msg1
+            raise discord.NotFound(MagicMock(), "")
+
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(side_effect=fetch_message)
+        guild = make_guild([bot_member], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {
+            "channel_name": "general",
+            "message_ids": ["111", "999"],
+        })
+        assert "Deleted 1/2:" in result
+        assert "OK:" in result
+        assert "FAILED:" in result
+
+    @pytest.mark.asyncio
+    async def test_batch_active_message_guard(self):
+        """Active message ID is protected in batch mode."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        msg1 = make_message(bot_member, "msg 1")
+        msg1.delete = AsyncMock()
+
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(return_value=msg1)
+        guild = make_guild([bot_member], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        ex.active_message_id = 999
+        result = await ex.execute("delete_messages", {
+            "channel_name": "general",
+            "message_ids": ["111", "999"],
+        })
+        assert "Deleted 1/2:" in result
+        # Message 999 should be in FAILED
+        assert "can't delete my current response" in result
+
+    @pytest.mark.asyncio
+    async def test_batch_capped_at_10(self):
+        """Batch is capped at 10 IDs."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        msg = make_message(bot_member, "msg")
+        msg.delete = AsyncMock()
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(return_value=msg)
+        guild = make_guild([bot_member], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        ids = [str(i) for i in range(15)]
+        result = await ex.execute("delete_messages", {
+            "channel_name": "general",
+            "message_ids": ids,
+        })
+        assert ch.fetch_message.call_count == 10
+
+    @pytest.mark.asyncio
+    async def test_batch_deduplication(self):
+        """Duplicate IDs are deduplicated."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        msg = make_message(bot_member, "msg")
+        msg.delete = AsyncMock()
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(return_value=msg)
+        guild = make_guild([bot_member], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {
+            "channel_name": "general",
+            "message_id": "111",
+            "message_ids": ["111", "111"],
+        })
+        # Should only delete once despite 3 appearances of "111"
+        ch.fetch_message.assert_called_once_with(111)
+        msg.delete.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_merge_message_id_and_message_ids(self):
+        """message_id and message_ids are merged."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        msg1 = make_message(bot_member, "msg 1")
+        msg1.delete = AsyncMock()
+        msg2 = make_message(bot_member, "msg 2")
+        msg2.delete = AsyncMock()
+
+        async def fetch_message(mid):
+            return {111: msg1, 222: msg2}[mid]
+
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(side_effect=fetch_message)
+        guild = make_guild([bot_member], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {
+            "channel_name": "general",
+            "message_id": "111",
+            "message_ids": ["222"],
+        })
+        assert "Deleted 2/2:" in result
+
+    @pytest.mark.asyncio
+    async def test_single_id_backward_compat(self):
+        """Old single message_id form still works."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        msg = make_message(bot_member, "bot msg")
+        msg.delete = AsyncMock()
+        ch = make_text_channel("general")
+        ch.fetch_message = AsyncMock(return_value=msg)
+        guild = make_guild([bot_member], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {
+            "channel_name": "general",
+            "message_id": "12345",
+        })
+        assert "Deleted my message" in result
+        msg.delete.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_by_count_unchanged(self):
+        """By-count mode is unchanged."""
+        bot_member = make_member(0, "TestBot", bot=True)
+        msgs = [make_message(bot_member, f"msg {i}") for i in range(3)]
+        for m in msgs:
+            m.delete = AsyncMock()
+        ch = make_text_channel("general", messages=msgs)
+        guild = make_guild([bot_member], [ch])
+        guild.me.id = 0
+        ex = _executor(guild)
+        result = await ex.execute("delete_messages", {
+            "channel_name": "general",
+            "count": 2,
+        })
+        assert "Deleted 2" in result
+        assert "my message" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Batch status messages
+# ---------------------------------------------------------------------------
+
+
+class TestBatchStatusMessages:
+    def test_react_single_no_reactions_array(self):
+        result = _status_for_tool("react_to_message", {
+            "channel_name": "general",
+            "message_id": "123",
+            "emoji": "👍",
+        })
+        assert result == "Reacting to a message..."
+
+    def test_react_single_item_in_reactions(self):
+        result = _status_for_tool("react_to_message", {
+            "channel_name": "general",
+            "reactions": [{"message_id": "123", "emoji": "👍"}],
+        })
+        assert result == "Reacting to a message..."
+
+    def test_react_batch(self):
+        result = _status_for_tool("react_to_message", {
+            "channel_name": "general",
+            "reactions": [
+                {"message_id": "1", "emoji": "👍"},
+                {"message_id": "2", "emoji": "❤️"},
+                {"message_id": "3", "emoji": "🎉"},
+            ],
+        })
+        assert result == "Reacting to 3 messages..."
+
+    def test_delete_single_id(self):
+        result = _status_for_tool("delete_messages", {
+            "channel_name": "general",
+            "message_id": "123",
+        })
+        assert result == "Deleting a message..."
+
+    def test_delete_batch_ids(self):
+        result = _status_for_tool("delete_messages", {
+            "channel_name": "general",
+            "message_ids": ["1", "2", "3"],
+        })
+        assert result == "Deleting 3 messages..."
+
+    def test_delete_merged_ids(self):
+        result = _status_for_tool("delete_messages", {
+            "channel_name": "general",
+            "message_id": "1",
+            "message_ids": ["2", "3"],
+        })
+        assert result == "Deleting 3 messages..."
+
+    def test_delete_by_count_unchanged(self):
+        result = _status_for_tool("delete_messages", {"channel_name": "general"})
+        assert result == "Deleting messages in #general..."
 
 
 if __name__ == "__main__":

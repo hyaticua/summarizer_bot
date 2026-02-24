@@ -91,29 +91,51 @@ ALL_DISCORD_TOOLS = [
     },
     {
         "name": "react_to_message",
-        "description": "React to a message with an emoji. Use this to express acknowledgment, agreement, humor, or emotion in response to messages — even when not explicitly asked to react.",
+        "description": "React to one or more messages with emoji. Supports single reaction (message_id + emoji) or batch mode (reactions array). Use this to express acknowledgment, agreement, humor, or emotion in response to messages — even when not explicitly asked to react.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "channel_name": {
                     "type": "string",
-                    "description": "Name of the channel the message is in."
+                    "description": "Default channel name. Used for single-reaction mode and as default for batch items that omit channel_name."
                 },
                 "message_id": {
                     "type": "string",
-                    "description": "The ID of the message to react to."
+                    "description": "The ID of the message to react to (single mode, ignored if reactions is provided)."
                 },
                 "emoji": {
                     "type": "string",
-                    "description": "Unicode emoji (e.g. '👍') or custom emoji name to react with."
+                    "description": "Unicode emoji (e.g. '👍') or custom emoji name (single mode, ignored if reactions is provided)."
+                },
+                "reactions": {
+                    "type": "array",
+                    "description": "Batch mode: array of reactions to add. Max 20.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "channel_name": {
+                                "type": "string",
+                                "description": "Channel name (optional, defaults to top-level channel_name)."
+                            },
+                            "message_id": {
+                                "type": "string",
+                                "description": "The ID of the message to react to."
+                            },
+                            "emoji": {
+                                "type": "string",
+                                "description": "Unicode emoji or custom emoji name."
+                            }
+                        },
+                        "required": ["message_id", "emoji"]
+                    }
                 }
             },
-            "required": ["channel_name", "message_id", "emoji"]
+            "required": ["channel_name"]
         }
     },
     {
         "name": "delete_messages",
-        "description": "Delete messages in a channel. Can delete a specific message by ID, or delete your own recent messages by count.",
+        "description": "Delete messages in a channel. Can delete specific messages by ID (single or batch), or delete your own recent messages by count.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -125,9 +147,16 @@ ALL_DISCORD_TOOLS = [
                     "type": "string",
                     "description": "Specific message ID to delete. If omitted, deletes your own recent messages."
                 },
+                "message_ids": {
+                    "type": "array",
+                    "description": "Batch mode: array of message IDs to delete. Max 10. If both message_id and message_ids are provided, they are merged and deduplicated.",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "count": {
                     "type": "integer",
-                    "description": "Number of your own recent messages to delete (default 1, max 5). Only used when message_id is not provided."
+                    "description": "Number of your own recent messages to delete (default 1, max 5). Only used when no message IDs are provided."
                 }
             },
             "required": ["channel_name"]
@@ -289,7 +318,15 @@ def _status_for_tool(name: str, tool_input: dict) -> str:
         return f"Reading messages from #{channel}..."
     elif name == "delete_messages":
         channel = tool_input.get("channel_name", "unknown")
+        # Count IDs from both message_id and message_ids
+        id_count = 0
         if tool_input.get("message_id"):
+            id_count += 1
+        if tool_input.get("message_ids"):
+            id_count += len(tool_input["message_ids"])
+        if id_count > 1:
+            return f"Deleting {id_count} messages..."
+        if id_count == 1:
             return "Deleting a message..."
         return f"Deleting messages in #{channel}..."
     elif name == "timeout_member":
@@ -305,6 +342,9 @@ def _status_for_tool(name: str, tool_input: dict) -> str:
             return "Cancelling a scheduled task..."
         return "Listing scheduled tasks..."
     elif name == "react_to_message":
+        reactions = tool_input.get("reactions")
+        if reactions and len(reactions) > 1:
+            return f"Reacting to {len(reactions)} messages..."
         return "Reacting to a message..."
     return "Using a tool..."
 
@@ -350,6 +390,25 @@ def _parse_duration(expr: str) -> timedelta | None:
         "week": timedelta(weeks=1),
     }
     return unit_map[unit] * amount
+
+
+def _format_batch_results(results: list[tuple[bool, str]], action_verb: str) -> str:
+    """Format batch operation results into a summary string.
+
+    For a single item, returns the plain message (matching old single-item behavior).
+    For multiple items, returns a summary like "Reacted 4/5:\n  OK: ...\n  FAILED: ...".
+    """
+    if len(results) == 1:
+        return results[0][1]
+
+    ok = [msg for success, msg in results if success]
+    failed = [msg for success, msg in results if not success]
+    parts = [f"{action_verb} {len(ok)}/{len(results)}:"]
+    for msg in ok:
+        parts.append(f"  OK: {msg}")
+    for msg in failed:
+        parts.append(f"  FAILED: {msg}")
+    return "\n".join(parts)
 
 
 class DiscordToolExecutor:
@@ -676,33 +735,53 @@ class DiscordToolExecutor:
         if isinstance(channel, str):
             return channel  # error message
 
-        message_id = tool_input.get("message_id")
+        # Merge message_id + message_ids into a deduplicated list
+        ids: list[str] = []
+        if tool_input.get("message_id"):
+            ids.append(tool_input["message_id"])
+        if tool_input.get("message_ids"):
+            ids.extend(tool_input["message_ids"])
+        # Deduplicate while preserving order
+        seen = set()
+        unique_ids = []
+        for mid in ids:
+            if mid not in seen:
+                seen.add(mid)
+                unique_ids.append(mid)
+        unique_ids = unique_ids[:10]  # cap at 10
 
-        if message_id:
-            # Delete a specific message by ID
-            if self.active_message_id and int(message_id) == self.active_message_id:
-                return "Can't delete my current response message."
+        if unique_ids:
+            # Delete specific messages by ID (single or batch)
+            results: list[tuple[bool, str]] = []
+            for mid in unique_ids:
+                if self.active_message_id and int(mid) == self.active_message_id:
+                    results.append((False, f"{mid}: can't delete my current response message"))
+                    continue
 
-            try:
-                msg = await channel.fetch_message(int(message_id))
-            except discord.NotFound:
-                return f"Message {message_id} not found in #{channel.name}."
-            except (ValueError, TypeError):
-                return f"Invalid message ID: {message_id}"
-            except discord.Forbidden:
-                return f"I don't have permission to read #{channel.name}."
+                try:
+                    msg = await channel.fetch_message(int(mid))
+                except discord.NotFound:
+                    results.append((False, f"{mid}: not found in #{channel.name}"))
+                    continue
+                except (ValueError, TypeError):
+                    results.append((False, f"{mid}: invalid message ID"))
+                    continue
+                except discord.Forbidden:
+                    results.append((False, f"{mid}: no permission to read #{channel.name}"))
+                    continue
 
-            if msg.author.id == self.guild.me.id:
-                # Own message — always allowed
-                await msg.delete()
-                return f"Deleted my message in #{channel.name}."
-            else:
-                # Someone else's message — need manage_messages
-                perms = channel.permissions_for(self.guild.me)
-                if not perms.manage_messages:
-                    return f"I don't have permission to delete other users' messages in #{channel.name}."
-                await msg.delete()
-                return f"Deleted a message by {msg.author.display_name} in #{channel.name}."
+                if msg.author.id == self.guild.me.id:
+                    await msg.delete()
+                    results.append((True, f"Deleted my message in #{channel.name}"))
+                else:
+                    perms = channel.permissions_for(self.guild.me)
+                    if not perms.manage_messages:
+                        results.append((False, f"{mid}: no permission to delete others' messages in #{channel.name}"))
+                        continue
+                    await msg.delete()
+                    results.append((True, f"Deleted a message by {msg.author.display_name} in #{channel.name}"))
+
+            return _format_batch_results(results, "Deleted")
         else:
             # Delete the bot's own recent messages by count
             count = min(tool_input.get("count", 1), 5)
@@ -825,41 +904,72 @@ class DiscordToolExecutor:
             return await scheduler.cancel_task(self.guild.id, task_id)
 
     async def _react_to_message(self, tool_input: dict) -> str:
-        channel_name = tool_input.get("channel_name")
-        if not channel_name:
+        default_channel = tool_input.get("channel_name")
+        if not default_channel:
             return "Error: channel_name is required."
 
-        message_id = tool_input.get("message_id")
-        if not message_id:
-            return "Error: message_id is required."
+        # Normalize single vs batch into a list of reaction dicts
+        reactions_input = tool_input.get("reactions")
+        if reactions_input:
+            items = reactions_input[:20]  # cap at 20
+        else:
+            message_id = tool_input.get("message_id")
+            if not message_id:
+                return "Error: message_id is required."
+            emoji = tool_input.get("emoji")
+            if not emoji:
+                return "Error: emoji is required."
+            items = [{"channel_name": default_channel, "message_id": message_id, "emoji": emoji}]
 
-        emoji = tool_input.get("emoji")
-        if not emoji:
-            return "Error: emoji is required."
+        # Cache channel resolution per unique name
+        channel_cache: dict[str, object] = {}
+        results: list[tuple[bool, str]] = []
 
-        channel = self._fuzzy_find_channel(channel_name)
-        if isinstance(channel, str):
-            return channel  # error message
+        for item in items:
+            ch_name = item.get("channel_name") or default_channel
+            emoji = item.get("emoji")
+            message_id = item.get("message_id")
 
-        try:
-            msg = await channel.fetch_message(int(message_id))
-        except discord.NotFound:
-            return f"Message {message_id} not found in #{channel.name}."
-        except (ValueError, TypeError):
-            return f"Invalid message ID: {message_id}"
-        except discord.Forbidden:
-            return f"I don't have permission to read #{channel.name}."
+            if not message_id or not emoji:
+                results.append((False, f"Missing message_id or emoji"))
+                continue
 
-        try:
-            await msg.add_reaction(emoji)
-        except discord.Forbidden:
-            return f"I don't have permission to add reactions in #{channel.name}."
-        except discord.NotFound:
-            return f"Emoji '{emoji}' not found."
-        except discord.HTTPException as e:
-            return f"Failed to react: {e}"
+            # Resolve channel (cached)
+            if ch_name not in channel_cache:
+                channel_cache[ch_name] = self._fuzzy_find_channel(ch_name)
+            channel = channel_cache[ch_name]
 
-        return f"Reacted with {emoji} to a message in #{channel.name}."
+            if isinstance(channel, str):
+                results.append((False, f"{emoji} on {message_id}: {channel}"))
+                continue
+
+            try:
+                msg = await channel.fetch_message(int(message_id))
+            except discord.NotFound:
+                results.append((False, f"{emoji} on {message_id}: message not found in #{channel.name}"))
+                continue
+            except (ValueError, TypeError):
+                results.append((False, f"{emoji} on {message_id}: invalid message ID"))
+                continue
+            except discord.Forbidden:
+                results.append((False, f"{emoji} on {message_id}: no permission to read #{channel.name}"))
+                continue
+
+            try:
+                await msg.add_reaction(emoji)
+            except discord.Forbidden:
+                results.append((False, f"{emoji} on {message_id}: no permission to add reactions in #{channel.name}"))
+                continue
+            except discord.NotFound:
+                results.append((False, f"{emoji} on {message_id}: emoji '{emoji}' not found"))
+                continue
+            except discord.HTTPException as e:
+                results.append((False, f"{emoji} on {message_id}: {e}"))
+                continue
+
+            results.append((True, f"Reacted with {emoji} to a message in #{channel.name}"))
+
+        return _format_batch_results(results, "Reacted")
 
     def _no_results_message(self, channel_name: str, tool_input: dict, scanned: int) -> str:
         """Informative message when no messages match the filters."""

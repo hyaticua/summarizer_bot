@@ -90,18 +90,19 @@ python -m summarizer_bot.main
     - `exclude_bots`: Skip bot messages
     - All filters combine with AND logic; when active, up to `SCAN_LIMIT=500` messages are scanned in batches of `BATCH_SIZE=100`
     - `before`/`after` are passed to `channel.history()` for server-side filtering; other filters applied client-side
-  - `delete_messages`: Delete messages in a channel. By specific message ID (own messages always allowed; others' require `manage_messages`), or by count to delete the bot's own recent messages (max 5, no special permission needed)
+  - `delete_messages`: Delete messages in a channel. Supports single ID (`message_id`), batch IDs (`message_ids` array, max 10, deduplicated with `message_id`), or by count to delete the bot's own recent messages (max 5). Own messages always allowed; others' require `manage_messages`. Batch results use per-item error handling via `_format_batch_results()`
   - `timeout_member`: Temporarily timeout a member. Fuzzy-finds the member, parses a human-readable duration via `_parse_duration()`, guards against bots/self/role hierarchy, calls `member.timeout_for()`
   - `schedule_message`: Schedule a static message or dynamic LLM prompt for future execution. Resolves channel, validates time/limits, delegates to `Scheduler.add_task()`
   - `manage_scheduled`: List or cancel scheduled tasks for the guild. Delegates to `Scheduler.list_tasks()` / `Scheduler.cancel_task()`
-  - `react_to_message`: React to a message with an emoji. Resolves channel via `_fuzzy_find_channel()`, fetches message by ID, calls `message.add_reaction()`. Handles `Forbidden`, `NotFound`, `HTTPException`
+  - `react_to_message`: React to messages with emoji. Supports single reaction (`message_id` + `emoji`) or batch mode (`reactions` array, max 20). `channel_name` at the top level serves as default for batch items that omit it. Channel resolution is cached per unique name. Batch results use per-item error handling via `_format_batch_results()`
 - `TOOL_PERMISSIONS`: Maps tool names to required guild-level Discord permissions. Tools with unmet permissions are excluded from the LLM's tool list at request time
 - `DiscordToolExecutor`: Executes tools against a `discord.Guild`, returns results as strings
   - Constructor accepts `requesting_user` param (display name of the user who triggered the tool) for task attribution
   - `get_available_tools()`: Filters `ALL_DISCORD_TOOLS` by the bot's guild permissions, only exposing tools the bot can actually use
 - `_fuzzy_find_channel()`: Channel name resolution (exact → case-insensitive → substring match)
 - `_parse_duration()`: Parses "N unit(s)" strings (e.g., "5 minutes", "1 hour") into `timedelta`
-- `_status_for_tool()`: Returns user-facing status strings per tool invocation; shows filter details when active (e.g., "Searching #general for messages from Alice containing 'bug'...", "Deleting messages in #general...", "Timing out Alice...")
+- `_format_batch_results()`: Formats batch operation results. Single item returns plain message (backward compat); multiple items return summary like `"Reacted 4/5:\n  OK: ...\n  FAILED: ..."`
+- `_status_for_tool()`: Returns user-facing status strings per tool invocation; shows filter details when active (e.g., "Searching #general for messages from Alice containing 'bug'...", "Deleting 3 messages...", "Reacting to 5 messages...", "Timing out Alice...")
 - Errors are returned as descriptive strings to the LLM, not raised
 - Tools are only offered in guild contexts (not DMs)
 - Tool output uses `format_message_text()` from `message.py` for consistent message formatting with the chat context
