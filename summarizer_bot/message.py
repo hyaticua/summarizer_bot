@@ -6,6 +6,11 @@ import json
 from discord.ext.commands import MemberConverter
 from loguru import logger
 
+try:
+    from tz import ET
+except ImportError:
+    from .tz import ET
+
 def attempt_to_find_member(name: str, guild: discord.Guild):
     """
     Attempt to find a guild member by their display name.
@@ -215,7 +220,7 @@ class Message:
     def to_json(self) -> dict:
         obj = {
             "message_id": self.id,
-            "created_at": self.created_at.strftime("%Y-%m-%d %H:%M"),
+            "created_at": self.created_at.astimezone(ET).strftime("%Y-%m-%d %H:%M"),
             "author" : self.author,
             "content" : self.text,
         }

@@ -9,6 +9,11 @@ import aiofiles
 from dateutil import parser as dateutil_parser
 from loguru import logger
 
+try:
+    from tz import ET
+except ImportError:
+    from .tz import ET
+
 TASKS_FILE = "scheduled_tasks.json"
 MAX_TASKS_PER_GUILD = 25
 MAX_HORIZON_DAYS = 30
@@ -47,12 +52,13 @@ def _parse_future_time(expr: str) -> datetime | None:
     - "tomorrow at HH:MM" / "today at HH:MM"
     - Absolute dates via dateutil (e.g. "2026-03-01 14:00", "March 1 at 2pm")
 
-    Returns None if the expression cannot be parsed.
+    Naive datetimes are assumed to be in Eastern time.
+    Returns a UTC datetime for storage.
     """
     expr = expr.strip().lower()
     now = datetime.now(timezone.utc)
 
-    # "in N units" pattern
+    # "in N units" pattern — relative, timezone doesn't matter
     match = re.match(r"in\s+(\d+)\s+(second|minute|hour|day|week)s?$", expr)
     if match:
         amount = int(match.group(1))
@@ -66,7 +72,7 @@ def _parse_future_time(expr: str) -> datetime | None:
         }
         return now + unit_map[unit] * amount
 
-    # "tomorrow at HH:MM" / "today at HH:MM"
+    # "tomorrow at HH:MM" / "today at HH:MM" — interpret in Eastern time
     match = re.match(r"(today|tomorrow)\s+at\s+(.+)$", expr)
     if match:
         day_word = match.group(1)
@@ -75,21 +81,22 @@ def _parse_future_time(expr: str) -> datetime | None:
             parsed_time = dateutil_parser.parse(time_str)
         except (ValueError, OverflowError):
             return None
-        base = now if day_word == "today" else now + timedelta(days=1)
+        now_et = datetime.now(ET)
+        base = now_et if day_word == "today" else now_et + timedelta(days=1)
         result = base.replace(
             hour=parsed_time.hour,
             minute=parsed_time.minute,
             second=0,
             microsecond=0,
         )
-        return result
+        return result.astimezone(timezone.utc)
 
-    # Absolute date/time via dateutil
+    # Absolute date/time via dateutil — assume Eastern if naive
     try:
         parsed = dateutil_parser.parse(expr)
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed
+            parsed = parsed.replace(tzinfo=ET)
+        return parsed.astimezone(timezone.utc)
     except (ValueError, OverflowError):
         return None
 
@@ -319,7 +326,7 @@ class Scheduler:
         self.tasks.append(task)
         await self._save_tasks()
 
-        time_str = execute_at.strftime("%Y-%m-%d %H:%M UTC")
+        time_str = execute_at.astimezone(ET).strftime("%Y-%m-%d %H:%M %Z")
         return f"Scheduled {'dynamic prompt' if task_type == 'dynamic' else 'message'} in #{channel_name} for {time_str} (task ID: {task.id}). Reason: {reason}"
 
     def list_tasks(self, guild_id: int) -> str:
@@ -331,7 +338,7 @@ class Scheduler:
         guild_tasks.sort(key=lambda t: t.execute_at)
         lines = []
         for t in guild_tasks:
-            time_str = t.execute_at_dt.strftime("%Y-%m-%d %H:%M UTC")
+            time_str = t.execute_at_dt.astimezone(ET).strftime("%Y-%m-%d %H:%M %Z")
             preview = t.content[:60] + ("..." if len(t.content) > 60 else "")
             lines.append(
                 f"- **{t.id}** | {time_str} | {t.task_type} | #{t.channel_name} | {preview} (by {t.created_by})"
@@ -345,6 +352,6 @@ class Scheduler:
             if t.id == task_id and t.guild_id == guild_id:
                 removed = self.tasks.pop(i)
                 await self._save_tasks()
-                return f"Cancelled task {removed.id} (was scheduled for {removed.execute_at_dt.strftime('%Y-%m-%d %H:%M UTC')} in #{removed.channel_name})."
+                return f"Cancelled task {removed.id} (was scheduled for {removed.execute_at_dt.astimezone(ET).strftime('%Y-%m-%d %H:%M %Z')} in #{removed.channel_name})."
 
         return f"No task found with ID '{task_id}' in this server."

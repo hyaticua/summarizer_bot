@@ -1,7 +1,8 @@
 import discord
 from message import Message, UserProfile
 import json
-import time
+from datetime import datetime
+from tz import ET
 
 
 
@@ -29,7 +30,8 @@ def make_sys_prompt(guild: discord.Guild, persona: str, channel: discord.abc.Mes
     """
     persona_text = persona.replace("{{BOT_NAME}}", guild.me.display_name)
 
-    context = f"# Current Context\n\nCurrent date: {time.strftime('%Y-%m-%d')}\nCurrent time: {time.strftime('%H:%M')}\n"
+    now = datetime.now(ET)
+    context = f"# Current Context\n\nCurrent date: {now.strftime('%Y-%m-%d')}\nCurrent time: {now.strftime('%H:%M %Z')}\n"
     if channel:
         if isinstance(channel, discord.Thread):
             parent_name = channel.parent.name if channel.parent else "unknown"

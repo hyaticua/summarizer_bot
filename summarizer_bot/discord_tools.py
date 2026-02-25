@@ -6,6 +6,11 @@ from dateutil import parser as dateutil_parser
 from loguru import logger
 
 try:
+    from tz import ET
+except ImportError:
+    from .tz import ET
+
+try:
     from message import attempt_to_find_member, format_message_text
 except ImportError:
     from .message import attempt_to_find_member, format_message_text
@@ -291,16 +296,17 @@ TOOL_PERMISSIONS = {
 
 
 def _parse_time_expression(expr: str) -> datetime | None:
-    """Parse a human-readable time expression into a UTC datetime.
+    """Parse a human-readable time expression into a timezone-aware datetime.
 
     Supports:
     - Relative: "yesterday", "today", "last week", "last month", "N units ago"
     - Absolute: anything dateutil can parse (e.g. "2024-01-15", "Jan 15 2024")
 
     Returns None if the expression cannot be parsed.
+    Naive datetimes are assumed to be in Eastern time.
     """
     expr = expr.strip().lower()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(ET)
 
     # Hardcoded relative expressions
     if expr == "yesterday":
@@ -332,7 +338,7 @@ def _parse_time_expression(expr: str) -> datetime | None:
     try:
         parsed = dateutil_parser.parse(expr)
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=ET)
         return parsed
     except (ValueError, OverflowError):
         return None
@@ -714,7 +720,7 @@ class DiscordToolExecutor:
         max_total = 4000
         for msg in messages:
             content = format_message_text(msg, max_length=200, include_attachment_names=True)
-            timestamp = msg.created_at.strftime("%H:%M")
+            timestamp = msg.created_at.astimezone(ET).strftime("%H:%M")
             line = f"[{timestamp}] (id:{msg.id}) {msg.author.display_name}: {content}"
             total_chars += len(line)
             if total_chars > max_total:
@@ -760,9 +766,9 @@ class DiscordToolExecutor:
             content = format_message_text(msg, max_length=200, include_attachment_names=True)
 
             if use_date:
-                timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M")
+                timestamp = msg.created_at.astimezone(ET).strftime("%Y-%m-%d %H:%M")
             else:
-                timestamp = msg.created_at.strftime("%H:%M")
+                timestamp = msg.created_at.astimezone(ET).strftime("%H:%M")
 
             line = f"[{timestamp}] (id:{msg.id}) {msg.author.display_name}: {content}"
             total_chars += len(line)

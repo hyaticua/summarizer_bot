@@ -13,6 +13,8 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timedelta, timezone
 
+from summarizer_bot.tz import ET
+
 from summarizer_bot.scheduler import (
     _parse_future_time,
     Scheduler,
@@ -72,30 +74,36 @@ class TestParseFutureTime:
         result = _parse_future_time("tomorrow at 9am")
 
         assert result is not None
-        now = datetime.now(timezone.utc)
-        tomorrow = now + timedelta(days=1)
-        assert result.day == tomorrow.day
-        assert result.hour == 9
-        assert result.minute == 0
+        # Input is interpreted as 9am ET, result is UTC
+        result_et = result.astimezone(ET)
+        now_et = datetime.now(ET)
+        tomorrow_et = now_et + timedelta(days=1)
+        assert result_et.day == tomorrow_et.day
+        assert result_et.hour == 9
+        assert result_et.minute == 0
 
     def test_today_at_time(self):
         result = _parse_future_time("today at 3:30pm")
 
         assert result is not None
-        now = datetime.now(timezone.utc)
-        assert result.day == now.day
-        assert result.hour == 15
-        assert result.minute == 30
+        # Input is interpreted as 3:30pm ET, result is UTC
+        result_et = result.astimezone(ET)
+        now_et = datetime.now(ET)
+        assert result_et.day == now_et.day
+        assert result_et.hour == 15
+        assert result_et.minute == 30
 
     def test_absolute_date(self):
         result = _parse_future_time("2027-06-15 14:00")
 
         assert result is not None
-        assert result.year == 2027
-        assert result.month == 6
-        assert result.day == 15
-        assert result.hour == 14
-        assert result.minute == 0
+        # Input is interpreted as 2pm ET, result is UTC
+        result_et = result.astimezone(ET)
+        assert result_et.year == 2027
+        assert result_et.month == 6
+        assert result_et.day == 15
+        assert result_et.hour == 14
+        assert result_et.minute == 0
 
     def test_invalid_expression(self):
         result = _parse_future_time("gibberish not a time")
