@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 from anthropic import APIStatusError
+import httpx
 from openai import AsyncOpenAI
 try:
     from message import Message
@@ -56,7 +57,10 @@ class OpenAIClient:
 
 class AnthropicClient:
     def __init__(self, key, model: str = None) -> None:
-        self.client = AsyncAnthropic(api_key=key)
+        self.client = AsyncAnthropic(
+            api_key=key,
+            timeout=httpx.Timeout(120, connect=10),
+        )
         self.model = model or "claude-sonnet-4-6"
 
     async def generate(self, prompt: str, sys_prompt: str = None) -> str:
