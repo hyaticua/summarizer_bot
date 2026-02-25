@@ -20,7 +20,7 @@ class LLMResponse:
 WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
 WEB_FETCH_TOOL = {"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": 3}
 CODE_EXECUTION_TOOL = { "type": "code_execution_20250825", "name": "code_execution" }
-MAX_CONTINUATIONS = 3
+MAX_CONTINUATIONS = 5
 MAX_TOOL_ROUNDS = 3
 
 default_sys_prompt = (
@@ -129,10 +129,12 @@ class AnthropicClient:
         """Run a streaming request with web search and tool use, handling continuations."""
         turns = list(chat_turns)
         text = ""
+        continuations = 0
         tool_rounds = 0
         all_file_ids: list[str] = []
 
-        for iteration in range(MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1):
+        max_iterations = MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1
+        for iteration in range(max_iterations):
             response = await self._stream_single_request(turns, sys_prompt, status_callback, tool_executor)
             text = self._extract_text(response)
             all_file_ids.extend(self._extract_file_ids(response))
@@ -145,21 +147,47 @@ class AnthropicClient:
                          cache_read, cache_write)
 
             if response.stop_reason == "pause_turn":
+                continuations += 1
+                if continuations > MAX_CONTINUATIONS:
+                    logger.warning("Max server continuations ({}) reached, asking model to wrap up", MAX_CONTINUATIONS)
+                    turns.append({"role": "assistant", "content": response.content})
+                    turns.append({"role": "user", "content": "You've used all your tool turns. Please provide your final response now using only the information you've already gathered."})
+                    # One last iteration to get the final response
+                    final = await self._stream_single_request(turns, sys_prompt, status_callback, tool_executor)
+                    text = self._extract_text(final)
+                    all_file_ids.extend(self._extract_file_ids(final))
+                    break
                 # Server-side tool continuation (web search, web fetch, or code execution)
-                logger.info("Server tool continuation (iteration {})", iteration)
+                logger.info("Server tool continuation ({}/{})", continuations, MAX_CONTINUATIONS)
                 turns.append({"role": "assistant", "content": response.content})
-                turns.append({"role": "user", "content": "Continue."})
+                turns.append({"role": "user", "content": f"Continue. ({MAX_CONTINUATIONS - continuations} tool turns remaining)"})
             elif response.stop_reason == "tool_use" and tool_executor:
                 tool_rounds += 1
                 if tool_rounds > MAX_TOOL_ROUNDS:
-                    logger.warning("Max tool rounds ({}) reached, returning partial response", MAX_TOOL_ROUNDS)
+                    logger.warning("Max tool rounds ({}) reached, asking model to wrap up", MAX_TOOL_ROUNDS)
+                    turns.append({"role": "assistant", "content": response.content})
+                    # Return tool errors so the model knows it can't use more tools
+                    tool_errors = []
+                    for block in response.content:
+                        if block.type == "tool_use":
+                            tool_errors.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": "Tool limit reached. Please provide your final response now using only the information you've already gathered.",
+                                "is_error": True,
+                            })
+                    turns.append({"role": "user", "content": tool_errors})
+                    # One last iteration to get the final response
+                    final = await self._stream_single_request(turns, sys_prompt, status_callback, tool_executor)
+                    text = self._extract_text(final)
+                    all_file_ids.extend(self._extract_file_ids(final))
                     break
 
                 # Extract tool_use blocks and execute them
                 tool_results = []
                 for block in response.content:
                     if block.type == "tool_use":
-                        logger.info("Tool use: {} (round {})", block.name, tool_rounds)
+                        logger.info("Tool use: {} (round {}/{})", block.name, tool_rounds, MAX_TOOL_ROUNDS)
                         if status_callback:
                             await status_callback(_status_for_tool(block.name, block.input))
                         result = await tool_executor.execute(block.name, block.input)
@@ -182,7 +210,7 @@ class AnthropicClient:
 
         # Hit max rounds — return what we have
         if not text and not files:
-            logger.warning("Hit max stream iterations ({}), returning empty response", MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1)
+            logger.warning("Hit max stream iterations ({}), returning empty response", max_iterations)
         return LLMResponse(text=text, files=files)
 
     async def _stream_single_request(self, turns, sys_prompt, status_callback, tool_executor=None):

@@ -171,11 +171,17 @@ class ChatBot(discord.bot.Bot):
                 for f in llm_response.files[:10]:  # Discord caps at 10 files
                     discord_files.append(discord.File(io.BytesIO(f.data), filename=f.filename))
 
-                if discord_files:
+                if not response and not discord_files:
+                    fallback = "Sorry, I wasn't able to generate a response. Please try again."
+                    if sent_msg:
+                        await sent_msg.edit(content=fallback)
+                    else:
+                        await message.reply(fallback)
+                elif discord_files:
                     # Message.edit() cannot add file attachments — delete status msg and send fresh reply
                     if sent_msg:
                         await sent_msg.delete()
-                    await message.reply(response[:2000], files=discord_files)
+                    await message.reply(response[:2000] or "\u200b", files=discord_files)
                 elif sent_msg is None:
                     await message.reply(response[:2000])
                 else:
