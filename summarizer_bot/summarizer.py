@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
+from anthropic import APIStatusError
 from openai import AsyncOpenAI
 try:
     from message import Message
@@ -127,6 +128,8 @@ class AnthropicClient:
                      self.model, len(chat_turns), "yes" if tool_executor else "web-only")
         try:
             return await self._stream_with_search(chat_turns, sys_prompt, status_callback, tool_executor)
+        except APIStatusError:
+            raise  # Don't retry on API errors (overloaded, rate limit, etc.)
         except Exception as e:
             logger.warning("Streaming failed, falling back to non-streaming: {}", e)
             text = await self.generate_as_chat_turns(messages, sys_prompt)

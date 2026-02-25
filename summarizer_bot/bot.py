@@ -2,6 +2,7 @@ import io
 import os
 
 import discord
+from anthropic import APIStatusError
 from loguru import logger
 from config import Config
 from summarizer import AnthropicClient
@@ -108,6 +109,7 @@ class ChatBot(discord.bot.Bot):
 
     # overload
     async def on_message(self, message: discord.Message):
+        sent_msg = None
         try:
             if message.author == self.user:
                 return
@@ -190,6 +192,16 @@ class ChatBot(discord.bot.Bot):
                 elapsed_time = time.time() - start_time
                 logger.info("Response sent in {:.2f}s ({} chars)", elapsed_time, len(response))
 
+        except APIStatusError as e:
+            logger.warning("API error processing message from {}: {} {}", message.author.display_name, e.status_code, e.message)
+            error_msg = "The model is currently overloaded. Please try again in a moment."
+            try:
+                if sent_msg:
+                    await sent_msg.edit(content=error_msg)
+                else:
+                    await message.reply(error_msg)
+            except discord.errors.Forbidden:
+                pass
         except discord.errors.Forbidden as e:
             logger.warning("Forbidden error in channel {}: {}", message.channel, e)
             await message.author.send("Sorry it looks like I don't have access!")
