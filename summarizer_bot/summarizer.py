@@ -3,8 +3,15 @@ from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
-from message import Message
-from discord_tools import _status_for_tool
+try:
+    from message import Message
+except ImportError:
+    from .message import Message
+
+try:
+    from discord_tools import _status_for_tool
+except ImportError:
+    from .discord_tools import _status_for_tool
 from loguru import logger
 
 @dataclass
@@ -204,13 +211,21 @@ class AnthropicClient:
                 logger.debug("Stream complete (stop_reason={})", response.stop_reason)
                 break
 
+        # If we ended up with no text, give the model one final chance to respond
+        if not text:
+            logger.warning("No text after {} iterations, giving model one final turn to respond", iteration + 1)
+            turns.append({"role": "assistant", "content": response.content})
+            turns.append({"role": "user", "content": "Please provide your response now."})
+            final = await self._stream_single_request(turns, sys_prompt, status_callback, tool_executor)
+            text = self._extract_text(final)
+            all_file_ids.extend(self._extract_file_ids(final))
+
         # Download any files produced by code execution
         logger.info("Collected {} file IDs across all iterations: {}", len(all_file_ids), all_file_ids)
         files = await self._download_files(all_file_ids) if all_file_ids else []
 
-        # Hit max rounds — return what we have
         if not text and not files:
-            logger.warning("Hit max stream iterations ({}), returning empty response", max_iterations)
+            logger.warning("Empty response even after final turn")
         return LLMResponse(text=text, files=files)
 
     async def _stream_single_request(self, turns, sys_prompt, status_callback, tool_executor=None):
