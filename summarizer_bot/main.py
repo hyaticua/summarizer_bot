@@ -10,8 +10,8 @@ from loguru import logger
 # Remove the default stderr sink so we can reconfigure it
 logger.remove()
 
-# Console sink — INFO and above, colored
-logger.add(sys.stderr, level="DEBUG", colorize=True)
+# Console sink — DEBUG and above; auto-detect color (disabled when piped, e.g. pm2)
+logger.add(sys.stdout, level="DEBUG")
 
 # Rotating file sink — DEBUG and above, 25 MB per file, keep 7 days, compress old
 logger.add(
