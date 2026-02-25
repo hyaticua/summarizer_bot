@@ -10,6 +10,11 @@ try:
 except ImportError:
     from .message import attempt_to_find_member, format_message_text
 
+try:
+    from memory import MemoryStore
+except ImportError:
+    from .memory import MemoryStore
+
 SCAN_LIMIT = 500   # Max messages to scan from Discord when filtering
 BATCH_SIZE = 100    # Messages per Discord API call (Discord's max)
 
@@ -236,6 +241,41 @@ ALL_DISCORD_TOOLS = [
     },
 ]
 
+MEMORY_TOOLS = [
+    {
+        "name": "save_memory",
+        "description": "Save a memory about this server, its members, or anything worth remembering across conversations. If a memory with the same key exists, it will be updated.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "A short topic label for this memory (e.g. 'alice_birthday', 'movie_night_schedule'). Max 100 characters."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The content to remember. Max 500 characters."
+                }
+            },
+            "required": ["key", "content"]
+        }
+    },
+    {
+        "name": "delete_memory",
+        "description": "Delete a saved memory by its key. Use this to remove outdated or incorrect memories.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "The key of the memory to delete."
+                }
+            },
+            "required": ["key"]
+        }
+    },
+]
+
 # Maps tool names to the guild-level Discord permissions required to expose that tool.
 # Empty list means no special permission needed (available by default).
 TOOL_PERMISSIONS = {
@@ -346,6 +386,12 @@ def _status_for_tool(name: str, tool_input: dict) -> str:
         if reactions and len(reactions) > 1:
             return f"Reacting to {len(reactions)} messages..."
         return "Reacting to a message..."
+    elif name == "save_memory":
+        key = tool_input.get("key", "")
+        return f"Saving memory '{key}'..."
+    elif name == "delete_memory":
+        key = tool_input.get("key", "")
+        return f"Deleting memory '{key}'..."
     return "Using a tool..."
 
 
@@ -412,10 +458,11 @@ def _format_batch_results(results: list[tuple[bool, str]], action_verb: str) -> 
 
 
 class DiscordToolExecutor:
-    def __init__(self, guild: discord.Guild, bot: discord.Bot, requesting_user: str = "unknown"):
+    def __init__(self, guild: discord.Guild, bot: discord.Bot, requesting_user: str = "unknown", memory_store: MemoryStore | None = None):
         self.guild = guild
         self.bot = bot
         self.requesting_user = requesting_user
+        self.memory_store = memory_store
         self.active_message_id: int | None = None  # status message to exclude from deletions
 
     def get_available_tools(self) -> list[dict]:
@@ -426,6 +473,8 @@ class DiscordToolExecutor:
             required = TOOL_PERMISSIONS.get(tool["name"], [])
             if all(getattr(perms, perm, False) for perm in required):
                 available.append(tool)
+        if self.memory_store is not None:
+            available.extend(MEMORY_TOOLS)
         return available
 
     async def execute(self, name: str, tool_input: dict) -> str:
@@ -448,6 +497,10 @@ class DiscordToolExecutor:
                 result = await self._manage_scheduled(tool_input)
             elif name == "react_to_message":
                 result = await self._react_to_message(tool_input)
+            elif name == "save_memory":
+                result = await self._save_memory(tool_input)
+            elif name == "delete_memory":
+                result = await self._delete_memory(tool_input)
             else:
                 result = f"Unknown tool: {name}"
             logger.info(f"Tool result ({name}): {result[:500]}{'...' if len(result) > 500 else ''}")
@@ -970,6 +1023,19 @@ class DiscordToolExecutor:
             results.append((True, f"Reacted with {emoji} to a message in #{channel.name}"))
 
         return _format_batch_results(results, "Reacted")
+
+    async def _save_memory(self, tool_input: dict) -> str:
+        if self.memory_store is None:
+            return "Memory is not enabled."
+        key = tool_input.get("key", "")
+        content = tool_input.get("content", "")
+        return await self.memory_store.save_memory(self.guild.id, key, content)
+
+    async def _delete_memory(self, tool_input: dict) -> str:
+        if self.memory_store is None:
+            return "Memory is not enabled."
+        key = tool_input.get("key", "")
+        return await self.memory_store.delete_memory(self.guild.id, key)
 
     def _no_results_message(self, channel_name: str, tool_input: dict, scanned: int) -> str:
         """Informative message when no messages match the filters."""

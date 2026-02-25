@@ -240,10 +240,12 @@ class Scheduler:
             from .message import parse_response
             from .utils import make_sys_prompt
 
-        sys_prompt = make_sys_prompt(guild, self.bot.persona, channel=channel)
+        memory_store = getattr(self.bot, "memory_store", None)
+        memories_text = memory_store.format_for_prompt(guild.id) if memory_store else ""
+        sys_prompt = make_sys_prompt(guild, self.bot.persona, channel=channel, memories_text=memories_text)
         messages = [{"role": "user", "content": task.content}]
 
-        tool_executor = DiscordToolExecutor(guild, self.bot, requesting_user=task.created_by)
+        tool_executor = DiscordToolExecutor(guild, self.bot, requesting_user=task.created_by, memory_store=memory_store)
 
         try:
             llm_response = await self.bot.llm_client._stream_with_search(

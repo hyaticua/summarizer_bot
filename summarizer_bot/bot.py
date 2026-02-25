@@ -8,6 +8,7 @@ from summarizer import AnthropicClient
 from utils import make_sys_prompt
 from message import parse_response, UserProfile, Message
 from discord_tools import DiscordToolExecutor
+from memory import MemoryStore
 from scheduler import Scheduler
 from token_estimation import TokenCounter
 import time
@@ -30,6 +31,7 @@ class ChatBot(discord.bot.Bot):
         # use_api=False for fast estimation, use_api=True for accurate API-based counting
         self.token_counter = TokenCounter(self.llm_client.client, self.llm_client.model, use_api=False)
         self.scheduler = Scheduler(self)
+        self.memory_store = MemoryStore() if self.config.get_memory_mode() == "local" else None
 
         self.bad_bot_client = AnthropicClient(self.llm_api_key, model="claude-haiku-4-5-20251001")
         self.bad_bot_persona = self._setup_persona(BAD_BOT_PERSONA_PATH)
@@ -130,7 +132,8 @@ class ChatBot(discord.bot.Bot):
 
                 start_time = time.time()
 
-                sys_prompt = make_sys_prompt(message.guild, self.persona, channel=message.channel)
+                memories_text = self.memory_store.format_for_prompt(message.guild.id) if self.memory_store and message.guild else ""
+                sys_prompt = make_sys_prompt(message.guild, self.persona, channel=message.channel, memories_text=memories_text)
 
                 # Build context with token awareness
                 messages = await self.build_context_with_token_limit(
@@ -144,7 +147,7 @@ class ChatBot(discord.bot.Bot):
                 sent_msg = None
                 statuses = []
 
-                tool_executor = DiscordToolExecutor(message.guild, self, requesting_user=message.author.display_name) if message.guild else None
+                tool_executor = DiscordToolExecutor(message.guild, self, requesting_user=message.author.display_name, memory_store=self.memory_store) if message.guild else None
 
                 async def update_status(status):
                     nonlocal sent_msg

@@ -20,12 +20,12 @@ def build_json(messages: list[Message], user_profiles: list[UserProfile]) -> tup
     )
 
 
-def make_sys_prompt(guild: discord.Guild, persona: str, channel: discord.abc.Messageable = None) -> list[dict]:
+def make_sys_prompt(guild: discord.Guild, persona: str, channel: discord.abc.Messageable = None, memories_text: str = "") -> list[dict]:
     """Build a system prompt as a list of content blocks for prompt caching.
 
     Returns two blocks:
     - Static persona (with cache_control) — cached across requests
-    - Dynamic context (date/time/channel) — changes per request, not cached
+    - Dynamic context (date/time/channel/memories) — changes per request, not cached
     """
     persona_text = persona.replace("{{BOT_NAME}}", guild.me.display_name)
 
@@ -36,6 +36,9 @@ def make_sys_prompt(guild: discord.Guild, persona: str, channel: discord.abc.Mes
             context += f"Source channel: thread #{channel.name} in #{parent_name}\n"
         elif hasattr(channel, "name"):
             context += f"Source channel: #{channel.name}\n"
+
+    if memories_text:
+        context += f"\n{memories_text}"
 
     return [
         {"type": "text", "text": persona_text, "cache_control": {"type": "ephemeral"}},

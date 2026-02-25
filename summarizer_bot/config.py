@@ -87,6 +87,19 @@ class Config:
         self.global_config["polite_declined"] = []
         await self._save()
 
+    # --- Memory Mode ---
+
+    def get_memory_mode(self) -> str:
+        """Return memory mode: 'off' or 'local'."""
+        return self.global_config.get("memory_mode", "off")
+
+    async def set_memory_mode(self, mode: str):
+        """Set memory mode. Valid values: 'off', 'local'."""
+        if mode not in ("off", "local"):
+            raise ValueError(f"Invalid memory mode: {mode!r}. Must be 'off' or 'local'.")
+        self.global_config["memory_mode"] = mode
+        await self._save()
+
     async def _save(self):
         async with aiofiles.open("config.json", mode="w") as f:
             await f.write(json.dumps(self.global_config, indent=2))
