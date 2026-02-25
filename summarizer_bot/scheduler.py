@@ -37,7 +37,10 @@ class ScheduledTask:
 
     @property
     def execute_at_dt(self) -> datetime:
-        return datetime.fromisoformat(self.execute_at)
+        dt = datetime.fromisoformat(self.execute_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
 
     @property
     def created_at_dt(self) -> datetime:
