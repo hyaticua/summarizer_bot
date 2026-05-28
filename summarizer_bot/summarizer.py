@@ -142,15 +142,19 @@ class AnthropicClient:
     async def _stream_with_search(self, chat_turns: list[dict], sys_prompt: str, status_callback=None, tool_executor=None) -> LLMResponse:
         """Run a streaming request with web search and tool use, handling continuations."""
         turns = list(chat_turns)
-        text = ""
+        text_parts: list[str] = []
         continuations = 0
         tool_rounds = 0
         all_file_ids: list[str] = []
 
+        def add_text(part: str) -> None:
+            if part:
+                text_parts.append(part)
+
         max_iterations = MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1
         for iteration in range(max_iterations):
             response = await self._stream_single_request(turns, sys_prompt, status_callback, tool_executor)
-            text = self._extract_text(response)
+            add_text(self._extract_text(response))
             all_file_ids.extend(self._extract_file_ids(response))
 
             cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
@@ -164,22 +168,22 @@ class AnthropicClient:
                 continuations += 1
                 if continuations > MAX_CONTINUATIONS:
                     logger.warning("Max server continuations ({}) reached, asking model to wrap up", MAX_CONTINUATIONS)
-                    turns.append({"role": "assistant", "content": response.content})
+                    turns.append({"role": "assistant", "content": self._sanitize_for_resubmit(response.content)})
                     turns.append({"role": "user", "content": "You've used all your tool turns. Please provide your final response now using only the information you've already gathered."})
                     # One last iteration to get the final response
                     final = await self._stream_single_request(turns, sys_prompt, status_callback, tool_executor)
-                    text = self._extract_text(final)
+                    add_text(self._extract_text(final))
                     all_file_ids.extend(self._extract_file_ids(final))
                     break
                 # Server-side tool continuation (web search, web fetch, or code execution)
                 logger.info("Server tool continuation ({}/{})", continuations, MAX_CONTINUATIONS)
-                turns.append({"role": "assistant", "content": response.content})
+                turns.append({"role": "assistant", "content": self._sanitize_for_resubmit(response.content)})
                 turns.append({"role": "user", "content": f"Continue. ({MAX_CONTINUATIONS - continuations} tool turns remaining)"})
             elif response.stop_reason == "tool_use" and tool_executor:
                 tool_rounds += 1
                 if tool_rounds > MAX_TOOL_ROUNDS:
                     logger.warning("Max tool rounds ({}) reached, asking model to wrap up", MAX_TOOL_ROUNDS)
-                    turns.append({"role": "assistant", "content": response.content})
+                    turns.append({"role": "assistant", "content": self._sanitize_for_resubmit(response.content)})
                     # Return tool errors so the model knows it can't use more tools
                     tool_errors = []
                     for block in response.content:
@@ -193,7 +197,7 @@ class AnthropicClient:
                     turns.append({"role": "user", "content": tool_errors})
                     # One last iteration to get the final response
                     final = await self._stream_single_request(turns, sys_prompt, status_callback, tool_executor)
-                    text = self._extract_text(final)
+                    add_text(self._extract_text(final))
                     all_file_ids.extend(self._extract_file_ids(final))
                     break
 
@@ -212,25 +216,39 @@ class AnthropicClient:
                         })
 
                 # Append assistant message with tool_use blocks, then user message with results
-                turns.append({"role": "assistant", "content": response.content})
+                turns.append({"role": "assistant", "content": self._sanitize_for_resubmit(response.content)})
                 turns.append({"role": "user", "content": tool_results})
+            elif response.stop_reason == "max_tokens":
+                # Output cap hit mid-turn — possibly inside a server tool call. Sanitize
+                # (drops any dangling server_tool_use) and ask the model to continue.
+                logger.warning("Hit max_tokens (iteration {}), asking model to continue", iteration)
+                sanitized = self._sanitize_for_resubmit(response.content)
+                if not sanitized:
+                    sanitized = [{"type": "text", "text": "(my previous response was cut off)"}]
+                turns.append({"role": "assistant", "content": sanitized})
+                turns.append({"role": "user", "content": "Your previous message was cut off before you finished. Please continue and complete your response."})
             else:
                 logger.debug("Stream complete (stop_reason={})", response.stop_reason)
                 break
 
         # If we ended up with no text, give the model one final chance to respond
-        if not text:
+        if not text_parts:
             logger.warning("No text after {} iterations, giving model one final turn to respond", iteration + 1)
-            turns.append({"role": "assistant", "content": response.content})
-            turns.append({"role": "user", "content": "Please provide your response now."})
+            sanitized = self._sanitize_for_resubmit(response.content)
+            if sanitized:
+                turns.append({"role": "assistant", "content": sanitized})
+            # Avoid two user turns in a row (the API requires alternating roles).
+            if not turns or turns[-1]["role"] != "user":
+                turns.append({"role": "user", "content": "Please provide your response now."})
             final = await self._stream_single_request(turns, sys_prompt, status_callback, tool_executor)
-            text = self._extract_text(final)
+            add_text(self._extract_text(final))
             all_file_ids.extend(self._extract_file_ids(final))
 
         # Download any files produced by code execution
         logger.info("Collected {} file IDs across all iterations: {}", len(all_file_ids), all_file_ids)
         files = await self._download_files(all_file_ids) if all_file_ids else []
 
+        text = "\n".join(text_parts)
         if not text and not files:
             logger.warning("Empty response even after final turn")
         return LLMResponse(text=text, files=files)
@@ -253,7 +271,7 @@ class AnthropicClient:
         async with self.client.beta.messages.stream(
             model=self.model,
             system=sys_prompt or default_sys_prompt,
-            max_tokens=2048,
+            max_tokens=4096,
             tools=tools,
             betas=["files-api-2025-04-14"],
             messages=turns,
@@ -303,6 +321,37 @@ class AnthropicClient:
         "bash_code_execution_tool_result",
         "text_editor_code_execution_tool_result",
     )
+
+    _TOOL_RESULT_TYPES = _CODE_EXEC_RESULT_TYPES + (
+        "web_search_tool_result",
+        "web_fetch_tool_result",
+    )
+
+    @classmethod
+    def _sanitize_for_resubmit(cls, content):
+        """Drop dangling server_tool_use blocks before re-submitting a turn.
+
+        A ``max_tokens`` truncation can end an assistant turn right after a
+        ``server_tool_use`` block but before its ``*_tool_result`` arrives.
+        Re-submitting that turn makes the API reject the whole request
+        ("tool use ... without a corresponding tool_result block"), so strip any
+        server_tool_use whose id has no matching result block in the same turn.
+        """
+        result_ids = set()
+        for block in content:
+            if cls._get_field(block, "type") in cls._TOOL_RESULT_TYPES:
+                tool_use_id = cls._get_field(block, "tool_use_id")
+                if tool_use_id:
+                    result_ids.add(tool_use_id)
+        sanitized = []
+        for block in content:
+            if (cls._get_field(block, "type") == "server_tool_use"
+                    and cls._get_field(block, "id") not in result_ids):
+                logger.warning("Dropping dangling server_tool_use (id={}) before resubmit",
+                               cls._get_field(block, "id"))
+                continue
+            sanitized.append(block)
+        return sanitized
 
     @staticmethod
     def _get_content(block):

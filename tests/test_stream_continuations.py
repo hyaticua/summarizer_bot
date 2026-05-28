@@ -50,11 +50,12 @@ def make_tool_use_block(name="get_server_members", tool_id="tool_1", input_data=
     return b
 
 
-def make_server_tool_block():
-    """A server-side tool result block (e.g. web search result) — not text."""
+def make_server_tool_block(name="web_search", tool_id=None):
+    """A server_tool_use block (e.g. web search / code execution) — not text."""
     b = Mock()
     b.type = "server_tool_use"
-    b.name = "web_search"
+    b.name = name
+    b.id = tool_id
     return b
 
 
@@ -180,7 +181,9 @@ class TestClientToolRounds:
             tool_executor=executor,
         )
 
-        assert result.text == "Here are the members"
+        # Text is accumulated across iterations: preamble before the tool call is
+        # preserved alongside the final answer (previously the preamble was dropped).
+        assert result.text == "Let me check...\nHere are the members"
         executor.execute.assert_awaited_once_with("get_server_members", {})
 
     @pytest.mark.asyncio
@@ -365,3 +368,52 @@ class TestStatusCallbacks:
         # Both calls receive the callback
         for call in client._stream_single_request.call_args_list:
             assert call[0][2] is callback  # 3rd positional arg = status_callback
+
+
+class TestMaxTokens:
+    """max_tokens truncation mid server-tool-call must not produce an invalid resubmit."""
+
+    @pytest.mark.asyncio
+    async def test_dangling_server_tool_use_stripped_and_continues(self, client):
+        # Iteration 0: output cap hit right after a bash code-exec call, before its
+        # result block arrives — leaving a dangling server_tool_use.
+        truncated = make_response("max_tokens", [
+            make_server_tool_block(name="bash_code_execution", tool_id="srv_1"),
+        ])
+        final = make_response("end_turn", [make_text_block("Here is the answer")])
+
+        captured = []
+
+        async def fake_request(turns, *args, **kwargs):
+            captured.append(list(turns))  # snapshot turns at call time
+            return [truncated, final][len(captured) - 1]
+
+        client._stream_single_request = AsyncMock(side_effect=fake_request)
+
+        result = await client._stream_with_search(
+            [{"role": "user", "content": "do a thing"}], "sys",
+        )
+
+        assert result.text == "Here is the answer"
+        # The continuation request must not re-submit the dangling server_tool_use,
+        # which is what the API rejects with a 400.
+        second_turns = captured[1]
+        for turn in second_turns:
+            content = turn["content"]
+            if isinstance(content, list):
+                assert all(
+                    getattr(b, "type", None) != "server_tool_use" for b in content
+                ), "dangling server_tool_use was re-submitted"
+
+    @pytest.mark.asyncio
+    async def test_partial_text_preserved_across_truncation(self, client):
+        # Model emits some prose, gets cut off, then completes on continuation.
+        truncated = make_response("max_tokens", [make_text_block("Part one")])
+        final = make_response("end_turn", [make_text_block("Part two")])
+        client._stream_single_request = AsyncMock(side_effect=[truncated, final])
+
+        result = await client._stream_with_search(
+            [{"role": "user", "content": "explain"}], "sys",
+        )
+
+        assert result.text == "Part one\nPart two"
